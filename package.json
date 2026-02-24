@@ -1,10 +1,10 @@
 {
-  "name": "agent-passport-mcp",
+  "name": "agent-passport-system-mcp",
   "version": "1.0.0",
   "description": "MCP server for Agent Passport System — cryptographic identity, delegation, governance, and deliberation for AI agents",
   "type": "module",
   "bin": {
-    "agent-passport-mcp": "build/index.js"
+    "agent-passport-system-mcp": "build/index.js"
   },
   "files": [
     "build"
