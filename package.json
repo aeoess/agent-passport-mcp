@@ -4,7 +4,7 @@
   "description": "MCP server for Agent Passport System — cryptographic identity, delegation, governance, and deliberation for AI agents",
   "type": "module",
   "bin": {
-    "agent-passport-mcp": "./build/index.js"
+    "agent-passport-mcp": "build/index.js"
   },
   "files": [
     "build"
@@ -33,7 +33,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/aeoess/agent-passport-mcp"
+    "url": "git+https://github.com/aeoess/agent-passport-mcp.git"
   },
   "homepage": "https://github.com/aeoess/agent-passport-mcp",
   "dependencies": {
