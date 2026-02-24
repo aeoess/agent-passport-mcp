@@ -1,4 +1,4 @@
-# Agent Passport MCP Server
+# Agent Passport System MCP Server
 
 MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — cryptographic identity, delegation, governance, and deliberation for AI agents.
 
@@ -15,7 +15,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "mcpServers": {
     "agent-passport": {
       "command": "npx",
-      "args": ["agent-passport-mcp"]
+      "args": ["agent-passport-system-mcp"]
     }
   }
 }
@@ -30,7 +30,7 @@ Add to your MCP config:
   "mcpServers": {
     "agent-passport": {
       "command": "npx",
-      "args": ["agent-passport-mcp"]
+      "args": ["agent-passport-system-mcp"]
     }
   }
 }
@@ -39,7 +39,7 @@ Add to your MCP config:
 ### OpenClaw
 
 ```
-/mcp add agent-passport-mcp
+/mcp add agent-passport-system-mcp
 ```
 
 ## Tools
