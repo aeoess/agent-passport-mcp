@@ -52,7 +52,7 @@ import {
 import type {
   SocialContractAgent, Delegation, ActionReceipt,
   TaskBrief, TaskUnit, EvidencePacket, ReviewDecision,
-  CoordinationRole, AgoraFeed, AgoraRegistry,
+  CoordinationRole, AgoraFeed, AgoraRegistry, ActionIntent,
 } from "agent-passport-system";
 
 // ═══════════════════════════════════════
@@ -80,6 +80,8 @@ interface SessionState {
   floorYaml: string | null;
   // Commerce (Layer 8)
   commerceSpendLog: Array<{ amount: number; currency: string; merchant: string; timestamp: string }>;
+  // Intents (for policy evaluation chain)
+  intents: Map<string, ActionIntent>;
 }
 
 const state: SessionState = {
@@ -95,6 +97,7 @@ const state: SessionState = {
   agoraRegistry: createRegistry(),
   floorYaml: null,
   commerceSpendLog: [],
+  intents: new Map(),
 };
 
 // Load persisted task state
@@ -1337,6 +1340,8 @@ server.tool(
       privateKey: state.privateKey!,
     });
 
+    state.intents.set(intent.intentId, intent);
+
     return {
       content: [{
         type: "text" as const,
@@ -1353,9 +1358,9 @@ server.tool(
 
 server.tool(
   "evaluate_intent",
-  "[OPERATOR] Evaluate an intent against the Values Floor policy engine.",
+  "[OPERATOR] Evaluate an intent against the Values Floor policy engine. Returns real pass/fail verdict.",
   {
-    intent_id: z.string().describe("Intent ID to evaluate (for reference — pass full intent object)"),
+    intent_id: z.string().describe("Intent ID from create_intent"),
     delegation_scope: z.array(z.string()).describe("Delegation scope for context"),
     delegation_spend_limit: z.number().describe("Delegation spend limit"),
     delegation_spent: z.number().default(0).describe("Amount already spent"),
@@ -1365,8 +1370,9 @@ server.tool(
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
     if (!state.floorYaml) return { content: [{ type: "text" as const, text: 'No floor loaded. Use load_values_floor first.' }], isError: true };
 
-    // Note: In a real deployment, the intent would be passed by reference.
-    // Here we create a minimal validation context from provided params.
+    const intent = state.intents.get(args.intent_id);
+    if (!intent) return { content: [{ type: "text" as const, text: `Intent ${args.intent_id} not found. Use create_intent first.` }], isError: true };
+
     const floor = loadFloor(state.floorYaml);
     const validator = new FloorValidatorV1();
 
@@ -1390,16 +1396,34 @@ server.tool(
       agentAttestationValid: true,
     };
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          note: 'Policy evaluation context prepared. In production, pass the full ActionIntent object to evaluateIntent(). The MCP server provides context scaffolding — the SDK handles the cryptographic chain.',
-          context: validationContext,
-          validatorVersion: validator.version,
-        }, null, 2),
-      }],
-    };
+    try {
+      const decision = evaluateIntent({
+        intent,
+        validator,
+        validationContext,
+        evaluatorId: state.agentId || 'mcp-evaluator',
+        evaluatorPublicKey: state.agentKey!,
+        evaluatorPrivateKey: state.privateKey!,
+      });
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            decisionId: decision.decisionId,
+            intentId: decision.intentId,
+            verdict: decision.verdict,
+            reason: decision.reason,
+            principlesEvaluated: decision.principlesEvaluated.length,
+            constraints: decision.constraints,
+            floorVersion: decision.floorVersion,
+            signed: true,
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Policy evaluation failed: ${e.message}` }], isError: true };
+    }
   }
 );
 

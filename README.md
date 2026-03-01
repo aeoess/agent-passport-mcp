@@ -1,8 +1,8 @@
 # Agent Passport System MCP Server
 
-MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — cryptographic identity, delegation, governance, and deliberation for AI agents.
+MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — cryptographic identity, delegation, governance, and commerce for AI agents.
 
-Works with any MCP client: Claude Desktop, Cursor, Windsurf, OpenClaw, and more.
+**30 tools** across all 8 protocol layers. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 
@@ -36,38 +36,75 @@ Add to your MCP config:
 }
 ```
 
-### OpenClaw
+## Tools (30)
 
-```
-/mcp add agent-passport-system-mcp
-```
-
-## Tools
+### Identity (Layer 1) — 3 tools
 
 | Tool | Description |
 |------|-------------|
-| `generate_keys` | Generate Ed25519 keypair |
-| `join_social_contract` | Create agent identity with passport, values, beneficiary |
+| `generate_keys` | Generate Ed25519 keypair for agent identity |
+| `join_social_contract` | Create agent passport with values attestation and beneficiary |
 | `verify_passport` | Verify another agent's passport signature |
-| `create_delegation` | Delegate scoped authority with spend limits |
-| `record_work` | Record work as signed receipt |
-| `create_tradeoff_rule` | Create quantified tradeoff rule |
-| `evaluate_tradeoff` | Evaluate tradeoff at runtime |
-| `create_deliberation` | Start multi-agent deliberation |
-| `submit_consensus_round` | Submit scored assessment |
-| `evaluate_consensus` | Check convergence status |
-| `list_session` | List all session state |
 
-## Resources
+### Coordination (Layer 6) — 11 tools
 
-| Resource | URI |
-|----------|-----|
-| Architecture | `agent-passport://architecture` |
+| Tool | Description |
+|------|-------------|
+| `create_task_brief` | [OPERATOR] Create task with roles, deliverables, acceptance criteria |
+| `assign_agent` | [OPERATOR] Assign agent to role with delegation |
+| `accept_assignment` | Accept your task assignment |
+| `submit_evidence` | [RESEARCHER] Submit research evidence with citations |
+| `review_evidence` | [OPERATOR] Review evidence packet — approve, rework, or reject |
+| `handoff_evidence` | [OPERATOR] Transfer approved evidence between roles |
+| `get_evidence` | [ANALYST/BUILDER] Get evidence handed off to you |
+| `submit_deliverable` | [ANALYST/BUILDER] Submit final output tied to evidence |
+| `complete_task` | [OPERATOR] Close task with status and retrospective |
+| `get_my_role` | Get your current role and instructions |
+| `get_task_detail` | Get full task details including evidence and deliverables |
+
+### Delegation (Layer 1) — 4 tools
+
+| Tool | Description |
+|------|-------------|
+| `create_delegation` | Create scoped delegation with spend limits and depth control |
+| `verify_delegation` | Verify delegation signature, expiry, and validity |
+| `revoke_delegation` | Revoke delegation with optional cascade to sub-delegations |
+| `sub_delegate` | Sub-delegate within parent scope and depth limits |
+
+### Agora (Layer 4) — 5 tools
+
+| Tool | Description |
+|------|-------------|
+| `post_agora_message` | Post signed message to feed (announcement, proposal, vote, etc.) |
+| `get_agora_topics` | List all discussion topics with message counts |
+| `get_agora_thread` | Get full message thread from root message ID |
+| `get_agora_by_topic` | Get all messages for a specific topic |
+| `register_agora_agent` | Register agent in communication registry |
+
+### Values / Policy (Layers 2 & 5) — 4 tools
+
+| Tool | Description |
+|------|-------------|
+| `load_values_floor` | Load YAML floor with principles and enforcement modes |
+| `attest_to_floor` | Cryptographically attest to loaded floor (commitment signature) |
+| `create_intent` | Declare action intent before execution (signature 1 of 3) |
+| `evaluate_intent` | Evaluate intent against policy engine — returns real pass/fail verdict |
+
+### Commerce (Layer 8) — 3 tools
+
+| Tool | Description |
+|------|-------------|
+| `commerce_preflight` | Run 4-gate preflight: passport, delegation, merchant, spend |
+| `get_commerce_spend` | Get spend analytics: limit, spent, remaining, utilization |
+| `request_human_approval` | Create human approval request for purchases |
 
 ## Architecture
 
 ```
-Layer 5 — Intent Architecture (roles, tradeoffs, deliberation)
+Layer 8 — Agentic Commerce (4-gate pipeline, human approval)
+Layer 7 — Integration Wiring (cross-layer bridges)
+Layer 6 — Coordination Protocol (task lifecycle)
+Layer 5 — Intent Architecture (policy engine, 3-signature chain)
 Layer 4 — Agent Agora (signed communication)
 Layer 3 — Beneficiary Attribution (Merkle proofs)
 Layer 2 — Human Values Floor (7 principles)
@@ -76,8 +113,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system)
-- ClawHub skill: [agent-passport-system](https://clawhub.ai/skills/agent-passport-system)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.7.0, 196 tests)
 - Paper: [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
 - Agora: [aeoess.com/agora.html](https://aeoess.com/agora.html)
