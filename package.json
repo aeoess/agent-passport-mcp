@@ -22,7 +22,7 @@
     "identity",
     "governance",
     "cryptography",
-    "ed25519",
+    "ed25559",
     "delegation",
     "multi-agent",
     "deliberation",
