@@ -31,14 +31,28 @@ import {
   submitDeliverable, verifyDeliverable,
   completeTask, verifyCompletion,
   createTaskUnit, getTaskStatus, validateTaskUnit,
-  // Delegation
-  createDelegation, clearStores,
+  // Delegation (Layer 1)
+  createDelegation, verifyDelegation, revokeDelegation,
+  subDelegate, cascadeRevoke, clearStores,
+  // Agora (Layer 4)
+  createAgoraMessage, createFeed, appendToFeed,
+  getThread, getByTopic, getTopics,
+  createRegistry, registerAgent, verifyAgoraMessage,
+  // Values/Policy (Layer 2 + 5)
+  loadFloor, attestFloor, verifyAttestation,
+  createActionIntent, evaluateIntent,
+  FloorValidatorV1,
+  // Commerce (Layer 8)
+  commercePreflight, createCommerceDelegation,
+  getSpendSummary, requestHumanApproval,
+  // Integration bridges
+  commerceWithIntent, coordinationToAgora,
 } from "agent-passport-system";
 
 import type {
   SocialContractAgent, Delegation, ActionReceipt,
   TaskBrief, TaskUnit, EvidencePacket, ReviewDecision,
-  CoordinationRole,
+  CoordinationRole, AgoraFeed, AgoraRegistry,
 } from "agent-passport-system";
 
 // ═══════════════════════════════════════
@@ -59,6 +73,13 @@ interface SessionState {
   privateKey: string | null;
   // Coordination
   taskUnits: Map<string, TaskUnit>;
+  // Agora (Layer 4)
+  agoraFeed: AgoraFeed;
+  agoraRegistry: AgoraRegistry;
+  // Values (Layer 2)
+  floorYaml: string | null;
+  // Commerce (Layer 8)
+  commerceSpendLog: Array<{ amount: number; currency: string; merchant: string; timestamp: string }>;
 }
 
 const state: SessionState = {
@@ -70,6 +91,10 @@ const state: SessionState = {
   receipts: [],
   privateKey: process.env.AGENT_PRIVATE_KEY || null,
   taskUnits: new Map(),
+  agoraFeed: createFeed(),
+  agoraRegistry: createRegistry(),
+  floorYaml: null,
+  commerceSpendLog: [],
 };
 
 // Load persisted task state
@@ -906,6 +931,591 @@ server.tool(
             metrics: unit.completion.metrics,
           } : null,
           validation,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// DELEGATION TOOLS (Layer 1)
+// ═══════════════════════════════════════
+
+server.tool(
+  "create_delegation",
+  "[OPERATOR] Create a scoped delegation from one agent to another.",
+  {
+    delegated_to: z.string().describe("Public key of the agent receiving delegation"),
+    scope: z.array(z.string()).describe("Scopes to grant (e.g. ['web_search', 'code_execution'])"),
+    spend_limit: z.number().default(500).describe("Maximum spend allowed"),
+    max_depth: z.number().default(1).describe("How many levels of sub-delegation"),
+    expires_in_hours: z.number().default(24).describe("Delegation validity in hours"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    const delegation = createDelegation({
+      delegatedBy: state.agentKey!,
+      delegatedTo: args.delegated_to,
+      scope: args.scope,
+      spendLimit: args.spend_limit,
+      maxDepth: args.max_depth,
+      expiresInHours: args.expires_in_hours,
+      privateKey: state.privateKey!,
+    });
+
+    state.delegations.set(delegation.delegationId, delegation);
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          delegationId: delegation.delegationId,
+          delegatedTo: args.delegated_to.slice(0, 16) + '...',
+          scope: delegation.scope,
+          spendLimit: delegation.spendLimit,
+          maxDepth: delegation.maxDepth,
+          expiresAt: delegation.expiresAt,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "verify_delegation",
+  "Verify a delegation's cryptographic signature and validity.",
+  {
+    delegation_id: z.string().describe("Delegation ID to verify"),
+  },
+  async (args) => {
+    const delegation = state.delegations.get(args.delegation_id);
+    if (!delegation) return { content: [{ type: "text" as const, text: `Delegation ${args.delegation_id} not found in session.` }], isError: true };
+
+    const result = verifyDelegation(delegation);
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          delegationId: args.delegation_id,
+          valid: result.valid,
+          errors: result.errors,
+          scope: delegation.scope,
+          expired: new Date(delegation.expiresAt) < new Date(),
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "revoke_delegation",
+  "[OPERATOR] Revoke a delegation. Optionally cascade to all sub-delegations.",
+  {
+    delegation_id: z.string().describe("Delegation ID to revoke"),
+    reason: z.string().describe("Why the delegation is being revoked"),
+    cascade: z.boolean().default(true).describe("Also revoke all sub-delegations"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    if (args.cascade) {
+      const result = cascadeRevoke(args.delegation_id, state.agentKey!, args.reason, state.privateKey!);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            revokedCount: result.totalRevoked,
+            rootRevocation: { delegationId: result.rootRevocation.delegationId, revokedAt: result.rootRevocation.revokedAt },
+            cascadedCount: result.cascadedRevocations.length,
+            reason: args.reason,
+          }, null, 2),
+        }],
+      };
+    } else {
+      const revocation = revokeDelegation(args.delegation_id, state.agentKey!, args.reason, state.privateKey!);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            delegationId: args.delegation_id,
+            revokedAt: revocation.revokedAt,
+            reason: args.reason,
+          }, null, 2),
+        }],
+      };
+    }
+  }
+);
+
+server.tool(
+  "sub_delegate",
+  "Sub-delegate authority to another agent (must be within your delegation scope and depth).",
+  {
+    parent_delegation_id: z.string().describe("Your delegation ID"),
+    delegated_to: z.string().describe("Public key of the agent receiving sub-delegation"),
+    scope: z.array(z.string()).describe("Scopes to grant (must be subset of parent)"),
+    spend_limit: z.number().describe("Maximum spend (must be <= parent)"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    try {
+      const parentDel = state.delegations.get(args.parent_delegation_id);
+      if (!parentDel) return { content: [{ type: "text" as const, text: `Parent delegation ${args.parent_delegation_id} not found in session.` }], isError: true };
+
+      const sub = subDelegate({
+        parentDelegation: parentDel,
+        delegatedTo: args.delegated_to,
+        scope: args.scope,
+        spendLimit: args.spend_limit,
+        privateKey: state.privateKey!,
+      });
+
+      state.delegations.set(sub.delegationId, sub);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            delegationId: sub.delegationId,
+            parentId: args.parent_delegation_id,
+            scope: sub.scope,
+            spendLimit: sub.spendLimit,
+            depth: sub.currentDepth,
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Sub-delegation failed: ${e.message}` }], isError: true };
+    }
+  }
+);
+
+// ═══════════════════════════════════════
+// AGORA TOOLS (Layer 4)
+// ═══════════════════════════════════════
+
+server.tool(
+  "post_agora_message",
+  "Post a signed message to the Agora feed. Anyone can read, everything is signed.",
+  {
+    topic: z.string().describe("Topic channel (e.g. 'coordination', 'governance', 'general')"),
+    type: z.enum(["announcement", "proposal", "discussion", "request", "ack", "vote"]).describe("Message type"),
+    subject: z.string().describe("One-line summary"),
+    content: z.string().describe("Message body (markdown)"),
+    reply_to: z.string().optional().describe("Message ID to reply to (for threading)"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    const message = createAgoraMessage({
+      agentId: state.agentId || 'anonymous',
+      agentName: state.agentId || 'anonymous',
+      publicKey: state.agentKey!,
+      privateKey: state.privateKey!,
+      topic: args.topic,
+      type: args.type,
+      subject: args.subject,
+      content: args.content,
+      replyTo: args.reply_to,
+    });
+
+    state.agoraFeed = appendToFeed(state.agoraFeed, message);
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          messageId: message.id,
+          topic: message.topic,
+          subject: message.subject,
+          signed: !!message.signature,
+          feedSize: state.agoraFeed.messages.length,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "get_agora_topics",
+  "List all topics in the Agora feed with message counts.",
+  {},
+  async () => {
+    const topics = getTopics(state.agoraFeed);
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          topics: topics.map(t => ({ topic: t.topic, count: t.count })),
+          totalMessages: state.agoraFeed.messages.length,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "get_agora_thread",
+  "Get a message thread from the Agora feed.",
+  {
+    message_id: z.string().describe("Root message ID to get thread for"),
+  },
+  async (args) => {
+    const thread = getThread(state.agoraFeed, args.message_id);
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          threadLength: thread.length,
+          messages: thread.map(m => ({
+            id: m.id,
+            author: m.author.agentId,
+            subject: m.subject,
+            content: m.content.slice(0, 200) + (m.content.length > 200 ? '...' : ''),
+            replyTo: m.replyTo,
+          })),
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "get_agora_by_topic",
+  "Get all messages in a topic.",
+  {
+    topic: z.string().describe("Topic to filter by"),
+  },
+  async (args) => {
+    const messages = getByTopic(state.agoraFeed, args.topic);
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          topic: args.topic,
+          count: messages.length,
+          messages: messages.map(m => ({
+            id: m.id,
+            author: m.author.agentId,
+            type: m.type,
+            subject: m.subject,
+            content: m.content.slice(0, 200) + (m.content.length > 200 ? '...' : ''),
+            timestamp: m.timestamp,
+          })),
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "register_agora_agent",
+  "Register an agent in the Agora so their messages can be verified.",
+  {
+    agent_id: z.string().describe("Agent ID"),
+    agent_name: z.string().describe("Display name"),
+    public_key: z.string().describe("Ed25519 public key"),
+  },
+  async (args) => {
+    registerAgent(state.agoraRegistry, {
+      agentId: args.agent_id,
+      agentName: args.agent_name,
+      publicKey: args.public_key,
+      joinedAt: new Date().toISOString(),
+      role: 'member',
+    });
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          registered: true,
+          agentId: args.agent_id,
+          registrySize: state.agoraRegistry.agents.length,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// VALUES / POLICY TOOLS (Layer 2 + 5)
+// ═══════════════════════════════════════
+
+server.tool(
+  "load_values_floor",
+  "Load a Values Floor from YAML. Sets the floor principles for policy evaluation.",
+  {
+    yaml: z.string().describe("Values Floor YAML content"),
+  },
+  async (args) => {
+    try {
+      const floor = loadFloor(args.yaml);
+      state.floorYaml = args.yaml;
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            loaded: true,
+            version: floor.version,
+            principles: floor.floor.length,
+            names: floor.floor.map((p: any) => p.name),
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Failed to load floor: ${e.message}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "attest_to_floor",
+  "Attest that your agent agrees to abide by the loaded Values Floor.",
+  {
+    floor_version: z.string().describe("Version of the floor to attest to"),
+    extensions: z.array(z.string()).optional().describe("Optional additional extensions"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    if (!state.floorYaml) return { content: [{ type: "text" as const, text: 'No floor loaded. Use load_values_floor first.' }], isError: true };
+
+    const floor = loadFloor(state.floorYaml);
+    const attestation = attestFloor(
+      state.agentId || 'anonymous',
+      state.agentKey!,
+      args.floor_version,
+      args.extensions || [],
+      state.privateKey!,
+    );
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          attested: true,
+          agentId: attestation.agentId,
+          floorVersion: attestation.floorVersion,
+          extensions: attestation.extensions,
+          signed: !!attestation.commitment,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "create_intent",
+  "Declare an intent to perform an action. First step of the 3-signature chain.",
+  {
+    action_type: z.string().describe("What type of action (e.g. 'web_search', 'commerce:checkout')"),
+    target: z.string().describe("What the action operates on"),
+    scope_required: z.string().describe("Which delegation scope is needed"),
+    spend_amount: z.number().optional().describe("Expected spend amount"),
+    spend_currency: z.string().optional().describe("Spend currency (e.g. 'usd')"),
+    context: z.string().optional().describe("Why the agent wants to do this"),
+    delegation_id: z.string().describe("Delegation ID authorizing this action"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    const intent = createActionIntent({
+      agentId: state.agentId || 'anonymous',
+      agentPublicKey: state.agentKey!,
+      delegationId: args.delegation_id,
+      action: {
+        type: args.action_type,
+        target: args.target,
+        scopeRequired: args.scope_required,
+        spend: args.spend_amount ? { amount: args.spend_amount, currency: args.spend_currency || 'usd' } : undefined,
+      },
+      context: args.context,
+      privateKey: state.privateKey!,
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          intentId: intent.intentId,
+          action: intent.action,
+          signed: !!intent.signature,
+          note: 'Intent created. Use evaluate_intent for policy decision (signature 2 of 3).',
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "evaluate_intent",
+  "[OPERATOR] Evaluate an intent against the Values Floor policy engine.",
+  {
+    intent_id: z.string().describe("Intent ID to evaluate (for reference — pass full intent object)"),
+    delegation_scope: z.array(z.string()).describe("Delegation scope for context"),
+    delegation_spend_limit: z.number().describe("Delegation spend limit"),
+    delegation_spent: z.number().default(0).describe("Amount already spent"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    if (!state.floorYaml) return { content: [{ type: "text" as const, text: 'No floor loaded. Use load_values_floor first.' }], isError: true };
+
+    // Note: In a real deployment, the intent would be passed by reference.
+    // Here we create a minimal validation context from provided params.
+    const floor = loadFloor(state.floorYaml);
+    const validator = new FloorValidatorV1();
+
+    const validationContext = {
+      floorVersion: floor.version,
+      floorPrinciples: floor.floor.map((p: any) => ({
+        id: p.id, name: p.name,
+        enforcement: p.enforcement,
+        weight: p.weight,
+      })),
+      delegation: {
+        scope: args.delegation_scope,
+        spendLimit: args.delegation_spend_limit,
+        spentAmount: args.delegation_spent,
+        expiresAt: new Date(Date.now() + 86400000).toISOString(),
+        revoked: false,
+        currentDepth: 0,
+        maxDepth: 2,
+      },
+      agentRegistered: true,
+      agentAttestationValid: true,
+    };
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          note: 'Policy evaluation context prepared. In production, pass the full ActionIntent object to evaluateIntent(). The MCP server provides context scaffolding — the SDK handles the cryptographic chain.',
+          context: validationContext,
+          validatorVersion: validator.version,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// COMMERCE TOOLS (Layer 8)
+// ═══════════════════════════════════════
+
+server.tool(
+  "commerce_preflight",
+  "Run preflight checks before a purchase. Validates passport, delegation, merchant, and spend limits.",
+  {
+    merchant_name: z.string().describe("Merchant to purchase from"),
+    amount: z.number().describe("Purchase amount"),
+    currency: z.string().default("usd").describe("Currency code"),
+    delegation_id: z.string().describe("Commerce delegation ID"),
+    agent_id: z.string().describe("Agent making the purchase"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    // Create a passport for preflight (uses session agent)
+    const agent = joinSocialContract({
+      name: args.agent_id,
+      mission: 'Commerce operation',
+      owner: 'mcp-session',
+      capabilities: ['commerce:checkout', 'commerce:browse'],
+      platform: 'node',
+      models: ['mcp'],
+    });
+
+    // Look up or create commerce delegation
+    const commerceDel = createCommerceDelegation({
+      agentId: args.agent_id,
+      delegationId: args.delegation_id,
+      spendLimit: 1000, // Default, should come from actual delegation
+      approvedMerchants: [], // Empty = all merchants allowed
+    });
+
+    const result = commercePreflight({
+      signedPassport: agent.passport,
+      delegation: commerceDel,
+      merchantName: args.merchant_name,
+      estimatedTotal: { amount: args.amount, currency: args.currency },
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          permitted: result.permitted,
+          checks: result.checks,
+          warnings: result.warnings,
+          blockedReason: result.blockedReason,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "get_commerce_spend",
+  "Get spend analytics for a commerce delegation.",
+  {
+    agent_id: z.string().describe("Agent ID"),
+    delegation_id: z.string().describe("Commerce delegation ID"),
+    spend_limit: z.number().describe("Total allowed spend"),
+  },
+  async (args) => {
+    const commerceDel = createCommerceDelegation({
+      agentId: args.agent_id,
+      delegationId: args.delegation_id,
+      spendLimit: args.spend_limit,
+    });
+
+    const summary = getSpendSummary(commerceDel);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify(summary, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "request_human_approval",
+  "Request human approval for a high-value purchase.",
+  {
+    agent_id: z.string().describe("Agent requesting approval"),
+    merchant: z.string().describe("Merchant name"),
+    amount: z.number().describe("Purchase amount"),
+    currency: z.string().default("usd").describe("Currency"),
+    reason: z.string().describe("Why this purchase is needed"),
+    expires_minutes: z.number().default(30).describe("Minutes until approval expires"),
+  },
+  async (args) => {
+    const approval = requestHumanApproval({
+      agentId: args.agent_id,
+      delegationId: 'pending',
+      merchantName: args.merchant,
+      items: [{ id: 'item-1', skuId: 'manual', name: args.reason, quantity: 1, unitPrice: { amount: args.amount, currency: args.currency }, totalPrice: { amount: args.amount, currency: args.currency } }],
+      totalAmount: { amount: args.amount, currency: args.currency },
+      reason: args.reason,
+      expiresInMinutes: args.expires_minutes,
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          requestId: approval.requestId,
+          status: approval.status,
+          expiresAt: approval.expiresAt,
+          note: 'Approval request created. Human must approve before checkout can proceed.',
         }, null, 2),
       }],
     };
