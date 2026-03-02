@@ -19,9 +19,9 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 import {
-  // Identity
+  // Identity + Crypto
   joinSocialContract, verifySocialContract, generateKeyPair,
-  delegate, recordWork,
+  delegate, recordWork, sign,
   // Agent Context (enforcement middleware)
   createAgentContext, AgentContext,
   // Coordination (Layer 6)
@@ -63,6 +63,8 @@ import type {
 // ═══════════════════════════════════════
 
 const STORE_PATH = join(process.env.HOME || '.', '.agent-passport-tasks.json');
+const COMMS_PATH = process.env.COMMS_PATH || join(process.env.HOME || '.', 'aeoess_web', 'comms');
+const AGENTS_PATH = process.env.AGENTS_PATH || join(process.env.HOME || '.', 'aeoess_web', 'agora', 'agents.json');
 
 interface SessionState {
   // Identity
@@ -158,6 +160,57 @@ function requireKey(): string | null {
     return 'No agent keys configured. Set AGENT_KEY and AGENT_PRIVATE_KEY env vars, or call identify.';
   }
   return null;
+}
+
+// ═══════════════════════════════════════
+// Comms Helpers
+// ═══════════════════════════════════════
+
+interface CommsMessage {
+  id: string;
+  timestamp: string;
+  from: string;
+  to: string;
+  type: string;
+  priority?: string;
+  subject: string;
+  message: string;
+  data?: Record<string, unknown>;
+  signature?: string;
+  processed?: boolean;
+}
+
+function readCommsFile(filePath: string): CommsMessage[] {
+  if (!existsSync(filePath)) return [];
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf-8'));
+  } catch { return []; }
+}
+
+function writeCommsFile(filePath: string, messages: CommsMessage[]): void {
+  writeFileSync(filePath, JSON.stringify(messages, null, 2));
+}
+
+function getAgentName(): string {
+  // Derive agent name from agentId (e.g., "claude-001" → "claude")
+  if (state.agentId) return state.agentId.replace(/-\d+$/, '');
+  if (state.agentKey) return state.agentKey.slice(0, 8);
+  return 'unknown';
+}
+
+function loadAgentsRegistry(): Array<{ agentId: string; agentName: string; publicKey: string; status: string; role: string; runtime: string; capabilities: string[] }> {
+  if (!existsSync(AGENTS_PATH)) return [];
+  try {
+    const data = JSON.parse(readFileSync(AGENTS_PATH, 'utf-8'));
+    return data.agents || [];
+  } catch { return []; }
+}
+
+async function signMessage(content: string): Promise<string> {
+  if (!state.privateKey) return '';
+  try {
+    return await sign(content, state.privateKey);
+  } catch { return ''; }
 }
 
 // ═══════════════════════════════════════
@@ -1249,6 +1302,165 @@ server.tool(
           registrySize: state.agoraRegistry.agents.length,
         }, null, 2),
       }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// COMMS TOOLS (Agent-to-Agent Communication)
+// ═══════════════════════════════════════
+
+server.tool(
+  "send_message",
+  "Send a signed message to another agent. Message is written to comms/to-{agent}.json.",
+  {
+    to: z.string().describe("Recipient agent name (e.g., 'aeoess', 'portalx2', 'claude')"),
+    subject: z.string().describe("Message subject"),
+    message: z.string().describe("Message body"),
+    type: z.string().optional().describe("Message type (default: 'message')"),
+    priority: z.string().optional().describe("Priority: low, normal, high, critical"),
+    data: z.record(z.unknown()).optional().describe("Structured data payload"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }] };
+
+    const fromName = getAgentName();
+    const toFile = join(COMMS_PATH, `to-${args.to}.json`);
+    const fromFile = join(COMMS_PATH, `from-${fromName}.json`);
+
+    const msg: CommsMessage = {
+      id: `msg-${fromName}-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      from: state.agentId || fromName,
+      to: args.to,
+      type: args.type || 'message',
+      priority: args.priority || 'normal',
+      subject: args.subject,
+      message: args.message,
+      data: args.data || {},
+      signature: await signMessage(args.subject + args.message),
+    };
+
+    // Write to recipient's inbox
+    const inbox = readCommsFile(toFile);
+    inbox.push(msg);
+    writeCommsFile(toFile, inbox);
+
+    // Write to sender's outbox
+    const outbox = readCommsFile(fromFile);
+    outbox.push(msg);
+    writeCommsFile(fromFile, outbox);
+
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({
+        sent: true, id: msg.id, to: args.to, subject: args.subject,
+      }, null, 2) }],
+    };
+  }
+);
+
+server.tool(
+  "check_messages",
+  "Check messages addressed to you. Reads from comms/to-{your-agent-name}.json.",
+  {
+    unprocessed_only: z.boolean().optional().describe("Only show unprocessed messages (default: true)"),
+    mark_read: z.boolean().optional().describe("Mark returned messages as processed (default: false)"),
+  },
+  async (args) => {
+    const name = getAgentName();
+    const filePath = join(COMMS_PATH, `to-${name}.json`);
+    let messages = readCommsFile(filePath);
+
+    const unprocessedOnly = args.unprocessed_only !== false;
+    if (unprocessedOnly) {
+      messages = messages.filter(m => !m.processed);
+    }
+
+    if (args.mark_read && messages.length > 0) {
+      const all = readCommsFile(filePath);
+      const ids = new Set(messages.map(m => m.id));
+      for (const m of all) { if (ids.has(m.id)) m.processed = true; }
+      writeCommsFile(filePath, all);
+    }
+
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({
+        agent: name, count: messages.length,
+        messages: messages.map(m => ({
+          id: m.id, from: m.from, subject: m.subject,
+          priority: m.priority, timestamp: m.timestamp,
+          message: m.message, data: m.data,
+        })),
+      }, null, 2) }],
+    };
+  }
+);
+
+server.tool(
+  "broadcast",
+  "Send a signed message to all agents via comms/broadcast.json.",
+  {
+    subject: z.string().describe("Message subject"),
+    message: z.string().describe("Message body"),
+    type: z.string().optional().describe("Message type (default: 'broadcast')"),
+    priority: z.string().optional().describe("Priority: low, normal, high, critical"),
+    data: z.record(z.unknown()).optional().describe("Structured data payload"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }] };
+
+    const fromName = getAgentName();
+    const broadcastFile = join(COMMS_PATH, 'broadcast.json');
+
+    const msg: CommsMessage = {
+      id: `bcast-${fromName}-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      from: state.agentId || fromName,
+      to: 'all',
+      type: args.type || 'broadcast',
+      priority: args.priority || 'normal',
+      subject: args.subject,
+      message: args.message,
+      data: args.data || {},
+      signature: await signMessage(args.subject + args.message),
+    };
+
+    const broadcasts = readCommsFile(broadcastFile);
+    broadcasts.push(msg);
+    writeCommsFile(broadcastFile, broadcasts);
+
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({
+        broadcast: true, id: msg.id, subject: args.subject,
+      }, null, 2) }],
+    };
+  }
+);
+
+server.tool(
+  "list_agents",
+  "List registered agents from the agent registry (agora/agents.json).",
+  {
+    status_filter: z.string().optional().describe("Filter by status: active, pending, retired (default: all)"),
+  },
+  async (args) => {
+    let agents = loadAgentsRegistry();
+
+    if (args.status_filter) {
+      agents = agents.filter(a => a.status === args.status_filter);
+    }
+
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({
+        count: agents.length,
+        agents: agents.map(a => ({
+          agentId: a.agentId, name: a.agentName,
+          status: a.status, role: a.role,
+          runtime: a.runtime, capabilities: a.capabilities,
+        })),
+      }, null, 2) }],
     };
   }
 );
