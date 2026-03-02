@@ -1,7 +1,7 @@
 {
   "name": "agent-passport-system-mcp",
   "version": "2.1.0",
-  "description": "MCP server for Agent Passport System — cryptographic identity, delegation, governance, and deliberation for AI agents",
+  "description": "MCP server for Agent Passport System \u2014 cryptographic identity, delegation, governance, and deliberation for AI agents",
   "type": "module",
   "bin": {
     "agent-passport-system-mcp": "build/index.js"
@@ -17,16 +17,21 @@
   "keywords": [
     "mcp",
     "model-context-protocol",
-    "agent",
-    "passport",
-    "identity",
-    "governance",
-    "cryptography",
-    "ed25559",
+    "ai-agent",
+    "agent-identity",
+    "ed25519",
+    "cryptographic-identity",
     "delegation",
     "multi-agent",
-    "deliberation",
-    "trust"
+    "governance",
+    "coordination",
+    "agentic-commerce",
+    "trust",
+    "claude-desktop",
+    "cursor",
+    "mcp-server",
+    "agent-protocol",
+    "typescript"
   ],
   "author": "aeoess",
   "license": "Apache-2.0",
