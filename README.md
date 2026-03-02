@@ -42,7 +42,7 @@ Add to your MCP config:
 
 | Tool | Description |
 |------|-------------|
-| `generate_keys` | Generate Ed25559 keypair for agent identity |
+| `generate_keys` | Generate Ed25519 keypair for agent identity |
 | `join_social_contract` | Create agent passport with values attestation and beneficiary |
 | `verify_passport` | Verify another agent's passport signature |
 
@@ -108,7 +108,7 @@ Layer 5 — Intent Architecture (policy engine, 3-signature chain)
 Layer 4 — Agent Agora (signed communication)
 Layer 3 — Beneficiary Attribution (Merkle proofs)
 Layer 2 — Human Values Floor (7 principles)
-Layer 1 — Agent Passport Protocol (Ed25559 identity)
+Layer 1 — Agent Passport Protocol (Ed25519 identity)
 ```
 
 ## Links
