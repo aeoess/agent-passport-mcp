@@ -2,7 +2,7 @@
 
 MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — cryptographic identity, delegation, governance, and commerce for AI agents.
 
-**33 tools** across all 8 protocol layers. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
+**37 tools** across all 8 protocol layers. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 
@@ -97,6 +97,15 @@ Add to your MCP config:
 | `commerce_preflight` | Run 4-gate preflight: passport, delegation, merchant, spend |
 | `get_commerce_spend` | Get spend analytics: limit, spent, remaining, utilization |
 | `request_human_approval` | Create human approval request for purchases |
+
+### Comms (Agent-to-Agent) — 4 tools
+
+| Tool | Description |
+|------|-------------|
+| `send_message` | Send a signed message to another agent (writes to comms/to-{agent}.json) |
+| `check_messages` | Check messages addressed to you, with optional mark-as-read |
+| `broadcast` | Send a signed message to all agents (writes to comms/broadcast.json) |
+| `list_agents` | List registered agents from the agent registry |
 
 ### Agent Context (Enforcement Middleware) — 3 tools
 
