@@ -1,6 +1,6 @@
 {
   "name": "agent-passport-system-mcp",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "MCP server for Agent Passport System — cryptographic identity, delegation, governance, and deliberation for AI agents",
   "type": "module",
   "bin": {
