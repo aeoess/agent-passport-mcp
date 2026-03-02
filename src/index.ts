@@ -22,6 +22,8 @@ import {
   // Identity
   joinSocialContract, verifySocialContract, generateKeyPair,
   delegate, recordWork,
+  // Agent Context (enforcement middleware)
+  createAgentContext, AgentContext,
   // Coordination (Layer 6)
   createTaskBrief, verifyTaskBrief,
   assignTask, acceptTask,
@@ -53,6 +55,7 @@ import type {
   SocialContractAgent, Delegation, ActionReceipt,
   TaskBrief, TaskUnit, EvidencePacket, ReviewDecision,
   CoordinationRole, AgoraFeed, AgoraRegistry, ActionIntent,
+  ValuesFloor, EnforcementLevel, ExecuteResult,
 } from "agent-passport-system";
 
 // ═══════════════════════════════════════
@@ -82,6 +85,10 @@ interface SessionState {
   commerceSpendLog: Array<{ amount: number; currency: string; merchant: string; timestamp: string }>;
   // Intents (for policy evaluation chain)
   intents: Map<string, ActionIntent>;
+  // Agent Context (enforcement middleware)
+  agentContext: AgentContext | null;
+  floor: ValuesFloor | null;
+  pendingActions: Map<string, ExecuteResult>;
 }
 
 const state: SessionState = {
@@ -98,6 +105,9 @@ const state: SessionState = {
   floorYaml: null,
   commerceSpendLog: [],
   intents: new Map(),
+  agentContext: null,
+  floor: null,
+  pendingActions: new Map(),
 };
 
 // Load persisted task state
@@ -1543,6 +1553,194 @@ server.tool(
         }, null, 2),
       }],
     };
+  }
+);
+
+// ═══════════════════════════════════════
+// AGENT CONTEXT — Enforcement Middleware
+// ═══════════════════════════════════════
+
+server.tool(
+  "create_agent_context",
+  "Create an enforcement context that automatically runs every action through the 3-signature policy chain. Without this, policy checks are opt-in. With this, agents physically cannot skip enforcement.",
+  {
+    name: z.string().describe("Agent name"),
+    mission: z.string().describe("Agent mission statement"),
+    enforcement: z.enum(["auto", "manual", "strict"]).default("auto").describe("Enforcement level: auto (every action checked), manual (tracking only), strict (auto + additional constraints)"),
+    delegated_scopes: z.array(z.string()).default([]).describe("Scopes to delegate (e.g. ['data:read', 'api:fetch', 'commerce:checkout'])"),
+    spend_limit: z.number().default(1000).describe("Maximum spend allowed"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    if (!state.floorYaml) {
+      return { content: [{ type: "text" as const, text: 'No floor loaded. Use load_values_floor first.' }], isError: true };
+    }
+
+    try {
+      const floor = loadFloor(state.floorYaml);
+
+      // Create the agent with floor attestation
+      const agent = joinSocialContract({
+        name: args.name,
+        mission: args.mission,
+        owner: 'mcp-session',
+        capabilities: args.delegated_scopes,
+        platform: 'node',
+        models: ['mcp'],
+        floor,
+      });
+
+      // Create the enforced context
+      const ctx = createAgentContext(agent, floor, {
+        enforcement: args.enforcement as EnforcementLevel,
+      });
+
+      // Add delegation if scopes provided
+      if (args.delegated_scopes.length > 0) {
+        const principal = joinSocialContract({
+          name: 'mcp-principal',
+          mission: 'MCP session principal',
+          owner: 'human',
+          capabilities: ['admin'],
+          platform: 'node',
+          models: ['mcp'],
+          floor,
+        });
+
+        const del = delegate({
+          from: principal,
+          toPublicKey: agent.publicKey,
+          scope: args.delegated_scopes,
+          spendLimit: args.spend_limit,
+          maxDepth: 3,
+          expiresInHours: 24,
+        });
+
+        ctx.addDelegation(del);
+      }
+
+      state.agentContext = ctx;
+      state.floor = floor;
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            created: true,
+            enforcement: args.enforcement,
+            agentId: agent.agentId,
+            scopes: args.delegated_scopes,
+            spendLimit: args.spend_limit,
+            note: `Agent Context active (${args.enforcement} mode). Use execute_with_context to run actions through the 3-signature chain.`,
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Failed to create context: ${e.message}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "execute_with_context",
+  "Execute an action through the enforcement context. Automatically runs the 3-signature chain: creates intent (sig 1), evaluates against floor + delegation (sig 2), returns verdict. Action is DENIED if outside delegated scope.",
+  {
+    action_type: z.string().describe("Action type (e.g. 'api:fetch', 'data:write', 'commerce:checkout')"),
+    target: z.string().describe("Target of the action (e.g. URL, file path, resource ID)"),
+    scope: z.string().describe("Required scope for this action (must match a delegated scope)"),
+    estimated_spend: z.number().optional().describe("Estimated spend for commerce actions"),
+  },
+  async (args) => {
+    if (!state.agentContext) {
+      return { content: [{ type: "text" as const, text: 'No agent context. Use create_agent_context first.' }], isError: true };
+    }
+
+    try {
+      const result = state.agentContext.execute({
+        type: args.action_type,
+        target: args.target,
+        scope: args.scope,
+        spend: args.estimated_spend ? { amount: args.estimated_spend, currency: 'USD' } : undefined,
+      });
+
+      // Store for later completion
+      if (result.permitted && result.intent) {
+        state.pendingActions.set(result.intent.intentId, result);
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            permitted: result.permitted,
+            verdict: result.verdict,
+            intentId: result.intent?.intentId,
+            evaluatorId: result.decision?.evaluatorId,
+            reason: result.reason,
+            stats: state.agentContext.stats,
+            note: result.permitted
+              ? `Action PERMITTED. Call complete_action with intent_id="${result.intent.intentId}" when done.`
+              : `Action DENIED: ${result.reason}`,
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Execute failed: ${e.message}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "complete_action",
+  "Complete a permitted action and get the full 3-signature proof chain (intent + decision + receipt + policy receipt). Call this after successfully executing the action.",
+  {
+    intent_id: z.string().describe("Intent ID from execute_with_context result"),
+    status: z.enum(["success", "failure", "partial"]).describe("Outcome of the action"),
+    summary: z.string().describe("Brief description of what was accomplished"),
+  },
+  async (args) => {
+    if (!state.agentContext) {
+      return { content: [{ type: "text" as const, text: 'No agent context. Use create_agent_context first.' }], isError: true };
+    }
+
+    // Find the pending execute result
+    const executeResult = state.pendingActions.get(args.intent_id);
+
+    if (!executeResult) {
+      return { content: [{ type: "text" as const, text: `No pending action found for intent ${args.intent_id}. Was it permitted?` }], isError: true };
+    }
+
+    try {
+      const completed = state.agentContext.complete(executeResult, {
+        status: args.status,
+        summary: args.summary,
+      });
+
+      // Clean up
+      state.pendingActions.delete(args.intent_id);
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            completed: true,
+            receiptId: completed.receipt.receiptId,
+            policyReceiptId: completed.policyReceipt?.receiptId,
+            signatures: {
+              intent: '✓ (agent declared intent)',
+              decision: '✓ (policy engine evaluated)',
+              receipt: '✓ (execution recorded)',
+            },
+            stats: state.agentContext.stats,
+            auditTrail: state.agentContext.auditLog.length + ' entries',
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Complete failed: ${e.message}` }], isError: true };
+    }
   }
 );
 

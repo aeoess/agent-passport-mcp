@@ -2,7 +2,7 @@
 
 MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — cryptographic identity, delegation, governance, and commerce for AI agents.
 
-**30 tools** across all 8 protocol layers. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
+**33 tools** across all 8 protocol layers. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 
@@ -36,7 +36,7 @@ Add to your MCP config:
 }
 ```
 
-## Tools (30)
+## Tools (33)
 
 ### Identity (Layer 1) — 3 tools
 
@@ -98,6 +98,14 @@ Add to your MCP config:
 | `get_commerce_spend` | Get spend analytics: limit, spent, remaining, utilization |
 | `request_human_approval` | Create human approval request for purchases |
 
+### Agent Context (Enforcement Middleware) — 3 tools
+
+| Tool | Description |
+|------|-------------|
+| `create_agent_context` | Create enforcement context — every action goes through 3-signature chain |
+| `execute_with_context` | Execute action through policy enforcement (intent → evaluate → verdict) |
+| `complete_action` | Complete action and get full proof chain (intent + decision + receipt) |
+
 ## Architecture
 
 ```
@@ -113,7 +121,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.7.0, 240 tests)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.8.0, 240 tests)
 - Paper: [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
 - Agora: [aeoess.com/agora.html](https://aeoess.com/agora.html)
