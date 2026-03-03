@@ -236,6 +236,19 @@ function persistAgoraFeed(): void {
       messages: state.agoraFeed.messages,
     };
     writeFileSync(AGORA_PATH, JSON.stringify(data, null, 2));
+
+    // Also update latest.json (lightweight polling endpoint)
+    const latestPath = AGORA_PATH.replace('messages.json', 'latest.json');
+    const last = state.agoraFeed.messages[state.agoraFeed.messages.length - 1];
+    const latest = {
+      lastMessageId: last?.id || null,
+      lastMessageTimestamp: last?.timestamp || null,
+      messageCount: state.agoraFeed.messages.length,
+      lastUpdated: data.lastUpdated,
+      feedUrl: 'https://aeoess.com/agora/messages.json',
+      registryUrl: 'https://aeoess.com/.well-known/agents.json',
+    };
+    writeFileSync(latestPath, JSON.stringify(latest, null, 2) + '\n');
   } catch {
     // Non-fatal: coordination still works even if persistence fails
   }
