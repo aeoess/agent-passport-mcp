@@ -12,7 +12,9 @@
   "scripts": {
     "build": "tsc && chmod 755 build/index.js",
     "watch": "tsc --watch",
-    "inspector": "npx @modelcontextprotocol/inspector build/index.js"
+    "inspector": "npx @modelcontextprotocol/inspector build/index.js",
+    "prepublishOnly": "npm run build",
+    "postpublish": "cd ~/aeoess_web && node scripts/propagate.mjs --apply --commit 2>/dev/null || echo 'Propagation skipped (aeoess_web not found)'"
   },
   "keywords": [
     "mcp",
