@@ -49,6 +49,11 @@ import {
   getSpendSummary, requestHumanApproval,
   // Integration bridges
   commerceWithIntent, coordinationToAgora,
+  postTaskCreated, postReviewCompleted, postTaskCompleted,
+} from "agent-passport-system";
+
+import type {
+  CoordinationEventType,
 } from "agent-passport-system";
 
 import type {
@@ -65,6 +70,7 @@ import type {
 const STORE_PATH = join(process.env.HOME || '.', '.agent-passport-tasks.json');
 const COMMS_PATH = process.env.COMMS_PATH || join(process.env.HOME || '.', 'aeoess_web', 'comms');
 const AGENTS_PATH = process.env.AGENTS_PATH || join(process.env.HOME || '.', 'aeoess_web', 'agora', 'agents.json');
+const AGORA_PATH = process.env.AGORA_PATH || join(process.env.HOME || '.', 'aeoess_web', 'agora', 'messages.json');
 
 interface SessionState {
   // Identity
@@ -196,6 +202,70 @@ function getAgentName(): string {
   if (state.agentId) return state.agentId.replace(/-\d+$/, '');
   if (state.agentKey) return state.agentKey.slice(0, 8);
   return 'unknown';
+}
+
+// ── Agora bridge: auto-post coordination events ──
+
+// Load existing Agora feed from disk on startup
+function loadAgoraFeed(): void {
+  if (!existsSync(AGORA_PATH)) return;
+  try {
+    const raw = JSON.parse(readFileSync(AGORA_PATH, 'utf-8'));
+    if (raw.messages && Array.isArray(raw.messages)) {
+      state.agoraFeed = {
+        version: raw.version || '1.0',
+        protocol: raw.protocol || 'agent-social-contract',
+        lastUpdated: raw.lastUpdated || new Date().toISOString(),
+        messageCount: raw.messages.length,
+        messages: raw.messages,
+      };
+    }
+  } catch {
+    // Non-fatal: start with empty feed if file is corrupted
+  }
+}
+
+// Persist Agora feed to disk after changes
+function persistAgoraFeed(): void {
+  try {
+    const data = {
+      version: state.agoraFeed.version,
+      protocol: state.agoraFeed.protocol,
+      lastUpdated: new Date().toISOString(),
+      messageCount: state.agoraFeed.messages.length,
+      messages: state.agoraFeed.messages,
+    };
+    writeFileSync(AGORA_PATH, JSON.stringify(data, null, 2));
+  } catch {
+    // Non-fatal: coordination still works even if persistence fails
+  }
+}
+
+function emitAgoraEvent(
+  event: CoordinationEventType,
+  taskId: string,
+  detail: string,
+): void {
+  // Skip if no identity — can't sign messages
+  if (!state.agentKey || !state.privateKey) return;
+
+  try {
+    const result = coordinationToAgora({
+      event,
+      taskId,
+      agentId: state.agentId || 'anonymous',
+      agentName: getAgentName(),
+      publicKey: state.agentKey,
+      privateKey: state.privateKey,
+      feed: state.agoraFeed,
+      registry: state.agoraRegistry,
+      detail,
+    });
+    state.agoraFeed = result.feed;
+    persistAgoraFeed();
+  } catch {
+    // Non-fatal: coordination still works even if Agora post fails
+  }
 }
 
 function loadAgentsRegistry(): Array<{ agentId: string; agentName: string; publicKey: string; status: string; role: string; runtime: string; capabilities: string[] }> {
@@ -473,6 +543,10 @@ server.tool(
     state.taskUnits.set(brief.taskId, unit);
     saveTasks();
 
+    // Bridge → Agora: announce task creation
+    emitAgoraEvent('task_created', brief.taskId,
+      `Task "${brief.title}" created with ${brief.roles.length} roles and ${brief.deliverables.length} deliverables. ${brief.description}`);
+
     // Set this agent as operator
     state.agentRole = 'operator';
 
@@ -534,6 +608,10 @@ server.tool(
     unit.assignments.push(assignment);
     saveTasks();
 
+    // Bridge → Agora: announce assignment
+    emitAgoraEvent('task_assigned', args.task_id,
+      `Agent ${args.agent_id} assigned as ${args.role} with delegation ${delegation.delegationId}.`);
+
     return {
       content: [{
         type: "text" as const,
@@ -593,6 +671,10 @@ server.tool(
       unit.reviews.push(review);
       saveTasks();
 
+      // Bridge → Agora: announce review result
+      emitAgoraEvent('review_completed', args.task_id,
+        `Review verdict: ${review.verdict} (score: ${review.score}/${review.threshold}). ${review.rationale}`);
+
       return {
         content: [{
           type: "text" as const,
@@ -649,6 +731,10 @@ server.tool(
       unit.handoffs.push(handoff);
       saveTasks();
 
+      // Bridge → Agora: announce handoff
+      emitAgoraEvent('evidence_handed_off', args.task_id,
+        `Evidence ${args.packet_id} handed off from researcher to ${args.to_role}.`);
+
       return {
         content: [{
           type: "text" as const,
@@ -693,6 +779,13 @@ server.tool(
 
     unit.completion = completion;
     saveTasks();
+
+    // Bridge → Agora: announce task completion
+    emitAgoraEvent('task_completed', args.task_id,
+      `Status: ${completion.status}. Agents: ${completion.metrics.agentCount}, ` +
+      `Duration: ${completion.metrics.totalDuration}s, ` +
+      `Rework cycles: ${completion.metrics.reworkCount}. ` +
+      (args.retrospective || ''));
 
     return {
       content: [{
@@ -790,6 +883,10 @@ server.tool(
 
     unit.evidencePackets.push(packet);
     saveTasks();
+
+    // Bridge → Agora: announce evidence submission
+    emitAgoraEvent('evidence_submitted', args.task_id,
+      `Evidence packet with ${packet.metadata.totalClaims} claims (${packet.metadata.citedClaims} cited, ${packet.metadata.gapCount} gaps).`);
 
     return {
       content: [{
@@ -889,6 +986,10 @@ server.tool(
 
     unit.deliverables.push(deliverable);
     saveTasks();
+
+    // Bridge → Agora: announce deliverable
+    emitAgoraEvent('deliverable_submitted', args.task_id,
+      `Deliverable for spec ${args.spec_id} submitted by ${state.agentRole || 'agent'} with ${args.citation_count} citations.`);
 
     return {
       content: [{
@@ -1190,6 +1291,7 @@ server.tool(
     });
 
     state.agoraFeed = appendToFeed(state.agoraFeed, message);
+    persistAgoraFeed();
     return {
       content: [{
         type: "text" as const,
@@ -1986,6 +2088,7 @@ server.prompt(
 
 async function main() {
   loadTasks();
+  loadAgoraFeed();
 
   const roleInfo = state.agentRole
     ? ` | Role: ${state.agentRole}`
@@ -1994,7 +2097,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error(`Agent Passport MCP Server v2.0 running${roleInfo}`);
-  console.error(`Tasks loaded: ${state.taskUnits.size}`);
+  console.error(`Tasks loaded: ${state.taskUnits.size} | Agora messages: ${state.agoraFeed.messages.length}`);
 }
 
 main().catch((error) => {
