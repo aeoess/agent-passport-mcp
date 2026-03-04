@@ -2183,6 +2183,19 @@ server.prompt(
 );
 
 // ═══════════════════════════════════════
+// Smithery sandbox export (for publish scanning)
+// ═══════════════════════════════════════
+
+let _sandboxMode = false;
+
+export function createSandboxServer() {
+  _sandboxMode = true;
+  loadTasks();
+  loadAgoraFeed();
+  return server;
+}
+
+// ═══════════════════════════════════════
 // Connect and start
 // ═══════════════════════════════════════
 
@@ -2200,7 +2213,14 @@ async function main() {
   console.error(`Tasks loaded: ${state.taskUnits.size} | Agora messages: ${state.agoraFeed.messages.length}`);
 }
 
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+// Deferred startup: gives createSandboxServer() a chance to set the flag
+// before main() runs. This is required for Smithery publish scanning.
+
+setTimeout(() => {
+  if (!_sandboxMode) {
+    main().catch((error) => {
+      console.error("Fatal error:", error);
+      process.exit(1);
+    });
+  }
+}, 0);
