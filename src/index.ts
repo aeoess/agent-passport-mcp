@@ -1421,6 +1421,93 @@ server.tool(
   }
 );
 
+server.tool(
+  "register_agora_public",
+  "Register your agent in the PUBLIC Agora registry at aeoess.com. Creates a GitHub issue that is auto-processed by a GitHub Action in ~30 seconds. Requires GITHUB_TOKEN env var or pass token directly. After registration, your agent can post signed messages visible at aeoess.com/agora.",
+  {
+    token: z.string().optional().describe("GitHub personal access token (or set GITHUB_TOKEN env var)"),
+    runtime: z.string().optional().describe("Agent runtime platform (e.g., 'claude', 'gpt-telegram', 'openclaw-github')"),
+    capabilities: z.array(z.string()).optional().describe("Agent capabilities"),
+    owner: z.string().optional().describe("Who operates this agent"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }] };
+
+    const agentId = state.agentId || 'unknown';
+    const agentName = getAgentName();
+    const publicKey = state.agentKey || '';
+
+    if (!publicKey) {
+      return { content: [{ type: "text" as const, text: "❌ No public key. Run identify or generate_keys first." }] };
+    }
+
+    const token = args.token || process.env.GITHUB_TOKEN;
+    if (!token) {
+      const regJSON = JSON.stringify({
+        agentId, agentName, publicKey,
+        owner: args.owner || '', runtime: args.runtime || '',
+        capabilities: args.capabilities || [], role: 'member'
+      }, null, 2);
+
+      const title = encodeURIComponent(`Agora Register: ${agentName}`);
+      const body = encodeURIComponent(`Register agent via MCP.\n\n\`\`\`json\n${regJSON}\n\`\`\`\n`);
+      const url = `https://github.com/aeoess/aeoess_web/issues/new?title=${title}&body=${body}&labels=agora-register`;
+
+      return { content: [{ type: "text" as const, text: `No GITHUB_TOKEN found. Open this URL to register manually:\n\n${url}` }] };
+    }
+
+    const registrationJSON = {
+      agentId, agentName, publicKey,
+      owner: args.owner || '', runtime: args.runtime || '',
+      capabilities: args.capabilities || [], role: 'member'
+    };
+
+    const issueTitle = `Agora Register: ${agentName}`;
+    const issueBody = `Register agent via MCP (agent-passport-system-mcp).\n\n\`\`\`json\n${JSON.stringify(registrationJSON, null, 2)}\n\`\`\`\n`;
+
+    try {
+      const response = await fetch('https://api.github.com/repos/aeoess/aeoess_web/issues', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': 'agent-passport-mcp'
+        },
+        body: JSON.stringify({
+          title: issueTitle,
+          body: issueBody,
+          labels: ['agora-register']
+        })
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        return { content: [{ type: "text" as const, text: `❌ GitHub API error (${response.status}): ${err.slice(0, 300)}\nCheck your token has "repo" or "public_repo" scope.` }] };
+      }
+
+      const issue = await response.json() as { html_url: string; number: number };
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            registered: true,
+            agentId,
+            publicKey: publicKey.slice(0, 16) + '...',
+            issueUrl: issue.html_url,
+            issueNumber: issue.number,
+            note: 'GitHub Action will process this in ~30 seconds. Check aeoess.com/agora after.'
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `❌ Failed to create issue: ${e.message}` }] };
+    }
+  }
+);
+
 // ═══════════════════════════════════════
 // COMMS TOOLS (Agent-to-Agent Communication)
 // ═══════════════════════════════════════
