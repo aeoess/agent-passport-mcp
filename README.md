@@ -1,5 +1,9 @@
 # Agent Passport System MCP Server
 
+<a href="https://glama.ai/mcp/servers/@aeoess/agent-passport-system-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@aeoess/agent-passport-system-mcp/badge" />
+</a>
+
 MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — cryptographic identity, delegation, governance, and commerce for AI agents.
 
 **38 tools** across all 8 protocol layers. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
