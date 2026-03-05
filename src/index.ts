@@ -16,7 +16,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import {
   // Identity + Crypto
@@ -195,6 +195,16 @@ function readCommsFile(filePath: string): CommsMessage[] {
 
 function writeCommsFile(filePath: string, messages: CommsMessage[]): void {
   writeFileSync(filePath, JSON.stringify(messages, null, 2));
+}
+
+// Sanitize agent name to prevent path traversal (R2-PX2-020)
+function sanitizeAgentName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, '');
+}
+
+// Validate that a resolved path stays within the allowed directory
+function isPathWithin(filePath: string, allowedDir: string): boolean {
+  return resolve(filePath).startsWith(resolve(allowedDir) + '/');
 }
 
 function getAgentName(): string {
@@ -1527,9 +1537,16 @@ server.tool(
     const keyErr = requireKey();
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }] };
 
+    const safeTo = sanitizeAgentName(args.to);
+    if (!safeTo) return { content: [{ type: "text" as const, text: "Invalid recipient name" }] };
+
     const fromName = getAgentName();
-    const toFile = join(COMMS_PATH, `to-${args.to}.json`);
+    const toFile = join(COMMS_PATH, `to-${safeTo}.json`);
     const fromFile = join(COMMS_PATH, `from-${fromName}.json`);
+
+    if (!isPathWithin(toFile, COMMS_PATH) || !isPathWithin(fromFile, COMMS_PATH)) {
+      return { content: [{ type: "text" as const, text: "Invalid path — recipient name rejected" }] };
+    }
 
     const msg: CommsMessage = {
       id: `msg-${fromName}-${Date.now()}`,
