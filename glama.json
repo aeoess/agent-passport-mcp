@@ -2,5 +2,9 @@
   "$schema": "https://glama.ai/mcp/schemas/server.json",
   "maintainers": [
     "aeoess"
+  ],
+  "relatedServers": [
+    "@anthropics/mcp-server-fetch",
+    "@anthropics/mcp-server-filesystem"
   ]
 }
