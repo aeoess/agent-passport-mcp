@@ -10,7 +10,22 @@ MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passp
 
 ## Quick Start
 
-### Claude Desktop
+### Remote (no install)
+
+Connect directly via SSE — works with any MCP client:
+
+```json
+{
+  "mcpServers": {
+    "agent-passport": {
+      "type": "sse",
+      "url": "https://mcp.aeoess.com/sse"
+    }
+  }
+}
+```
+
+### Claude Desktop (local)
 
 Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
