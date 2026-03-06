@@ -50,6 +50,11 @@ import {
   // Integration bridges
   commerceWithIntent, coordinationToAgora,
   postTaskCreated, postReviewCompleted, postTaskCompleted,
+  // Principal Identity
+  createPrincipalIdentity, endorseAgent, verifyEndorsement,
+  revokeEndorsement, createDisclosure, verifyDisclosure,
+  createFleet, addToFleet, getFleetStatus, revokeFromFleet,
+  endorsePassport, verifyPassportEndorsement, hasPrincipalEndorsement,
 } from "agent-passport-system";
 
 import type {
@@ -61,6 +66,7 @@ import type {
   TaskBrief, TaskUnit, EvidencePacket, ReviewDecision,
   CoordinationRole, AgoraFeed, AgoraRegistry, ActionIntent,
   ValuesFloor, EnforcementLevel, ExecuteResult,
+  PrincipalIdentity, PrincipalEndorsement, FleetRecord,
 } from "agent-passport-system";
 
 // ═══════════════════════════════════════
@@ -97,6 +103,11 @@ interface SessionState {
   agentContext: AgentContext | null;
   floor: ValuesFloor | null;
   pendingActions: Map<string, ExecuteResult>;
+  // Principal Identity
+  principal: PrincipalIdentity | null;
+  principalPrivateKey: string | null;
+  endorsements: Map<string, PrincipalEndorsement>;
+  fleet: FleetRecord | null;
 }
 
 const state: SessionState = {
@@ -116,6 +127,10 @@ const state: SessionState = {
   agentContext: null,
   floor: null,
   pendingActions: new Map(),
+  principal: null,
+  principalPrivateKey: null,
+  endorsements: new Map(),
+  fleet: null,
 };
 
 // Load persisted task state
@@ -2172,6 +2187,210 @@ server.tool(
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: `Complete failed: ${e.message}` }], isError: true };
     }
+  }
+);
+
+// ═══════════════════════════════════════
+// PRINCIPAL IDENTITY TOOLS
+// ═══════════════════════════════════════
+
+server.tool(
+  "create_principal",
+  "Create a principal identity (human or org behind agents). Gets its own Ed25519 keypair.",
+  {
+    display_name: z.string().describe("Human-readable name (e.g. 'Tima', 'Acme Corp')"),
+    domain: z.string().optional().describe("Verifiable domain (e.g. 'aeoess.com')"),
+    jurisdiction: z.string().optional().describe("Legal jurisdiction (e.g. 'US', 'EU')"),
+    contact_channel: z.string().optional().describe("Contact method (e.g. 'telegram:@aeoess')"),
+    disclosure_level: z.enum(["public", "verified-only", "minimal"]).default("public").describe("How much identity to reveal"),
+  },
+  async (args) => {
+    const { principal, keyPair } = createPrincipalIdentity({
+      displayName: args.display_name,
+      domain: args.domain,
+      jurisdiction: args.jurisdiction,
+      contactChannel: args.contact_channel,
+      disclosureLevel: args.disclosure_level,
+    });
+
+    state.principal = principal;
+    state.principalPrivateKey = keyPair.privateKey;
+    state.fleet = createFleet(principal);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          principalId: principal.principalId,
+          displayName: principal.displayName,
+          publicKey: principal.publicKey.slice(0, 16) + '...',
+          privateKey: keyPair.privateKey.slice(0, 16) + '... (store securely)',
+          domain: principal.domain,
+          disclosureLevel: principal.disclosureLevel,
+          note: 'Principal created. Use endorse_agent to sign off on agents.',
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "endorse_agent",
+  "Endorse an agent as a principal. Creates a cryptographic chain: principal → agent.",
+  {
+    agent_id: z.string().describe("Agent ID to endorse"),
+    agent_public_key: z.string().describe("Agent's Ed25519 public key"),
+    scope: z.array(z.string()).describe("What the agent can do on principal's behalf"),
+    relationship: z.enum(["creator", "operator", "employer", "sponsor"]).describe("How principal relates to agent"),
+    expires_in_days: z.number().default(365).describe("Days until endorsement expires"),
+  },
+  async (args) => {
+    if (!state.principal || !state.principalPrivateKey) {
+      return { content: [{ type: "text" as const, text: 'No principal identity. Call create_principal first.' }], isError: true };
+    }
+
+    const endorsement = endorseAgent({
+      principal: state.principal,
+      principalPrivateKey: state.principalPrivateKey,
+      agentId: args.agent_id,
+      agentPublicKey: args.agent_public_key,
+      scope: args.scope,
+      relationship: args.relationship,
+      expiresInDays: args.expires_in_days,
+    });
+
+    state.endorsements.set(endorsement.endorsementId, endorsement);
+    if (state.fleet) {
+      state.fleet = addToFleet(state.fleet, endorsement);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          endorsementId: endorsement.endorsementId,
+          principalId: endorsement.principalId,
+          agentId: endorsement.agentId,
+          relationship: endorsement.relationship,
+          scope: endorsement.scope,
+          expiresAt: endorsement.expiresAt,
+          note: 'Agent endorsed. The endorsement signature can be embedded in the agent\'s passport via endorse_passport.',
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "verify_endorsement",
+  "Verify a principal's endorsement of an agent. Checks cryptographic signature.",
+  {
+    endorsement_id: z.string().describe("Endorsement ID to verify"),
+  },
+  async (args) => {
+    const endorsement = state.endorsements.get(args.endorsement_id);
+    if (!endorsement) {
+      return { content: [{ type: "text" as const, text: `Endorsement ${args.endorsement_id} not found in session.` }], isError: true };
+    }
+
+    const result = verifyEndorsement(endorsement);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          valid: result.valid,
+          expired: result.expired,
+          revoked: result.revoked,
+          principalId: result.principalId,
+          agentId: result.agentId,
+          errors: result.errors,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "revoke_endorsement",
+  "Revoke a principal's endorsement of an agent. 'I no longer authorize this agent.'",
+  {
+    endorsement_id: z.string().describe("Endorsement ID to revoke"),
+    reason: z.string().describe("Why the endorsement is being revoked"),
+  },
+  async (args) => {
+    const endorsement = state.endorsements.get(args.endorsement_id);
+    if (!endorsement) {
+      return { content: [{ type: "text" as const, text: `Endorsement ${args.endorsement_id} not found.` }], isError: true };
+    }
+
+    const revoked = revokeEndorsement(endorsement, args.reason);
+    state.endorsements.set(args.endorsement_id, revoked);
+
+    if (state.fleet) {
+      state.fleet = revokeFromFleet(state.fleet, revoked.agentId);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          revoked: true,
+          endorsementId: revoked.endorsementId,
+          agentId: revoked.agentId,
+          reason: revoked.revokedReason,
+          revokedAt: revoked.revokedAt,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "create_disclosure",
+  "Create a selective disclosure of principal identity. Controls how much info is revealed.",
+  {
+    level: z.enum(["public", "verified-only", "minimal"]).describe("Disclosure level: public (everything), verified-only (id+key+domain), minimal (hash+DID only)"),
+  },
+  async (args) => {
+    if (!state.principal || !state.principalPrivateKey) {
+      return { content: [{ type: "text" as const, text: 'No principal identity. Call create_principal first.' }], isError: true };
+    }
+
+    const disclosure = createDisclosure(state.principal, state.principalPrivateKey, args.level);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          disclosureId: disclosure.disclosureId,
+          level: disclosure.level,
+          revealedFields: disclosure.revealedFields,
+          proof: disclosure.proof.slice(0, 16) + '...',
+          note: 'Share this disclosure with other agents. They can verify it with verify_disclosure.',
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "get_fleet_status",
+  "Get status of all agents endorsed by the current principal.",
+  {},
+  async () => {
+    if (!state.fleet) {
+      return { content: [{ type: "text" as const, text: 'No fleet. Call create_principal first.' }], isError: true };
+    }
+
+    const status = getFleetStatus(state.fleet);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify(status, null, 2),
+      }],
+    };
   }
 );
 
