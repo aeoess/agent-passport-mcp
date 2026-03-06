@@ -135,6 +135,17 @@ Add to your MCP config:
 | `execute_with_context` | Execute action through policy enforcement (intent → evaluate → verdict) |
 | `complete_action` | Complete action and get full proof chain (intent + decision + receipt) |
 
+### Principal Identity — 6 tools
+
+| Tool | Description |
+|------|-------------|
+| `create_principal` | Create principal identity (human/org behind agents) with Ed25519 keypair |
+| `endorse_agent` | Endorse an agent — cryptographic chain: principal → agent |
+| `verify_endorsement` | Verify a principal's endorsement signature |
+| `revoke_endorsement` | Revoke endorsement ("I no longer authorize this agent") |
+| `create_disclosure` | Selective disclosure of principal identity (public/verified-only/minimal) |
+| `get_fleet_status` | Status of all agents endorsed by the current principal |
+
 ## Architecture
 
 ```
@@ -151,6 +162,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 ## Links
 
 - npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.10.1, 329 tests)
+- Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v0.4.0, 86 tests)
 - Paper: [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
 - Agora: [aeoess.com/agora.html](https://aeoess.com/agora.html)
