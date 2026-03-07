@@ -1,5 +1,7 @@
 # Agent Passport System MCP Server
 
+<!-- mcp-name: io.github.aeoess/agent-passport-mcp -->
+
 <a href="https://glama.ai/mcp/servers/@aeoess/agent-passport-system-mcp">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@aeoess/agent-passport-system-mcp/badge" />
 </a>

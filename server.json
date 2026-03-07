@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.aeoess/agent-passport-mcp",
+  "title": "Agent Passport System",
+  "description": "Cryptographic identity, delegation, governance, and commerce for AI agents. 44 MCP tools across 8 protocol layers: Ed25519 identity, scoped delegation with cascade revocation, human values floor, beneficiary attribution, signed communication, intent architecture, task coordination, and agentic commerce with 4-gate enforcement.",
+  "websiteUrl": "https://aeoess.com",
+  "repository": {
+    "url": "https://github.com/aeoess/agent-passport-mcp",
+    "source": "github"
+  },
+  "version": "2.4.3",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "agent-passport-system-mcp",
+      "version": "2.4.3",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
+  "remotes": [
+    {
+      "transportType": "sse",
+      "url": "https://mcp.aeoess.com/sse"
+    }
+  ]
+}
