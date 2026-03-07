@@ -21,7 +21,7 @@
   ],
   "remotes": [
     {
-      "transportType": "sse",
+      "type": "sse",
       "url": "https://mcp.aeoess.com/sse"
     }
   ]
