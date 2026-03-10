@@ -8,7 +8,9 @@
     "agent-passport-system-mcp": "build/index.js"
   },
   "files": [
-    "build"
+    "build",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md"
   ],
   "scripts": {
     "build": "tsc && chmod 755 build/index.js",
