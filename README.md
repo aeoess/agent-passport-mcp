@@ -148,6 +148,16 @@ Add to your MCP config:
 | `create_disclosure` | Selective disclosure of principal identity (public/verified-only/minimal) |
 | `get_fleet_status` | Status of all agents endorsed by the current principal |
 
+### Reputation-Gated Authority — 5 tools
+
+| Tool | Description |
+|------|-------------|
+| `resolve_authority` | Compute effective reputation score and authority tier for an agent |
+| `check_tier` | Check if agent's earned tier permits action at given autonomy/spend |
+| `review_promotion` | Create signed promotion review (earned-only reviewers, no self-promotion) |
+| `update_reputation` | Bayesian (mu, sigma) updates from task results |
+| `get_promotion_history` | List all promotion reviews this session |
+
 ## Architecture
 
 ```
