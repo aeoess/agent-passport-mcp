@@ -55,6 +55,13 @@ import {
   revokeEndorsement, createDisclosure, verifyDisclosure,
   createFleet, addToFleet, getFleetStatus, revokeFromFleet,
   endorsePassport, verifyPassportEndorsement, hasPrincipalEndorsement,
+  // Reputation-Gated Authority (Layer 9)
+  computeEffectiveScore, createScopedReputation,
+  resolveAuthorityTier, checkTierForIntent, advisoryTierPrecheck,
+  createPromotionReview, validatePromotionReview,
+  triggerDemotion, updateReputationFromResult,
+  DEFAULT_TIERS, DEFAULT_PROMOTION_REQUIREMENTS,
+  meetsPromotionRequirements,
 } from "agent-passport-system";
 
 import type {
@@ -67,6 +74,8 @@ import type {
   CoordinationRole, AgoraFeed, AgoraRegistry, ActionIntent,
   ValuesFloor, EnforcementLevel, ExecuteResult,
   PrincipalIdentity, PrincipalEndorsement, FleetRecord,
+  ScopedReputation, AuthorityTier, TierCheckContext,
+  EvidencePortfolio, TierEscalation,
 } from "agent-passport-system";
 
 // ═══════════════════════════════════════
@@ -108,6 +117,9 @@ interface SessionState {
   principalPrivateKey: string | null;
   endorsements: Map<string, PrincipalEndorsement>;
   fleet: FleetRecord | null;
+  // Reputation-Gated Authority (Layer 9)
+  reputations: Map<string, ScopedReputation>;   // key: "principalId:agentId:scope"
+  promotionHistory: Array<{ review: any; appliedAt: string }>;
 }
 
 const state: SessionState = {
@@ -131,6 +143,8 @@ const state: SessionState = {
   principalPrivateKey: null,
   endorsements: new Map(),
   fleet: null,
+  reputations: new Map(),
+  promotionHistory: [],
 };
 
 // Load persisted task state
@@ -2389,6 +2403,244 @@ server.tool(
       content: [{
         type: "text" as const,
         text: JSON.stringify(status, null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// Reputation-Gated Authority (Layer 9)
+// ═══════════════════════════════════════
+
+/** Helper: resolve tier and build full AuthorityTier from TierDefinition */
+function resolveTier(score: number, demotionCount: number = 0): AuthorityTier {
+  const def = resolveAuthorityTier(score, demotionCount, DEFAULT_TIERS);
+  return { ...def, origin: 'earned' as const, demotionCount };
+}
+
+server.tool(
+  "resolve_authority",
+  "Compute effective reputation score and authority tier for an agent in a given scope. Returns tier name, autonomy level, spend limit, and effective score.",
+  {
+    agentId: z.string().describe("Agent ID to check"),
+    principalId: z.string().describe("Principal who delegated authority"),
+    scope: z.string().describe("Scope to check reputation in (e.g. 'code_execution', 'commerce')"),
+  },
+  async ({ agentId, principalId, scope }) => {
+    const key = `${principalId}:${agentId}:${scope}`;
+    let rep = state.reputations.get(key);
+
+    if (!rep) {
+      rep = createScopedReputation(principalId, agentId, scope);
+      state.reputations.set(key, rep);
+    }
+
+    const effectiveScore = computeEffectiveScore(rep.mu, rep.sigma);
+    const tier = resolveTier(effectiveScore);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          agentId, principalId, scope,
+          mu: rep.mu, sigma: rep.sigma,
+          effectiveScore,
+          tier: { name: tier.name, level: tier.tier, origin: tier.origin },
+          autonomyLevel: tier.autonomyLevel,
+          maxSpend: tier.maxSpendPerAction,
+          maxDelegationDepth: tier.maxDelegationDepth,
+          receiptCount: rep.receiptCount,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "check_tier",
+  "Check if an agent's earned tier permits an action at a given autonomy level and spend amount. Returns null if permitted, or escalation details if tier is insufficient.",
+  {
+    agentId: z.string().describe("Agent ID"),
+    principalId: z.string().describe("Principal ID"),
+    scope: z.string().describe("Reputation scope"),
+    requestedAutonomy: z.number().optional().describe("Requested autonomy level (1-5)"),
+    requestedSpend: z.number().optional().describe("Requested spend amount in dollars"),
+    requestedDepth: z.number().optional().describe("Requested delegation depth"),
+  },
+  async ({ agentId, principalId, scope, requestedAutonomy, requestedSpend, requestedDepth }) => {
+    const key = `${principalId}:${agentId}:${scope}`;
+    let rep = state.reputations.get(key);
+
+    if (!rep) {
+      rep = createScopedReputation(principalId, agentId, scope);
+      state.reputations.set(key, rep);
+    }
+
+    const effectiveScore = computeEffectiveScore(rep.mu, rep.sigma);
+    const tier = resolveTier(effectiveScore);
+    const ctx: TierCheckContext = { agentTier: tier, effectiveScore };
+
+    const escalation = checkTierForIntent({
+      tierContext: ctx,
+      requestedAutonomy: requestedAutonomy as any,
+      requestedSpend,
+      requestedDepth,
+    });
+
+    // Also get advisory warnings
+    const warnings = advisoryTierPrecheck({
+      tierContext: ctx,
+      requestedAutonomy: requestedAutonomy as any,
+      requestedSpend,
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          permitted: escalation === null,
+          currentTier: tier.name,
+          effectiveScore,
+          escalation,
+          warnings,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "review_promotion",
+  "Create a signed promotion review for another agent. Reviewer must have 'earned' origin and tier above target. Returns signed review artifact.",
+  {
+    agentId: z.string().describe("Agent being reviewed for promotion"),
+    principalId: z.string().describe("Principal who delegated to the agent"),
+    scope: z.string().describe("Scope of the promotion"),
+    toTier: z.number().describe("Target tier level (0-4)"),
+    verdict: z.enum(['promoted', 'denied']).describe("Promotion verdict"),
+    reasoning: z.string().describe("Explanation for the verdict"),
+    probationDays: z.number().optional().describe("Probation period in days (default: 7)"),
+  },
+  async ({ agentId, principalId, scope, toTier, verdict, reasoning, probationDays }) => {
+    if (!state.privateKey || !state.agentId) {
+      return { content: [{ type: "text" as const, text: 'Identity required. Call identify or set AGENT_KEY first.' }], isError: true };
+    }
+
+    // Get target agent's current reputation
+    const key = `${principalId}:${agentId}:${scope}`;
+    let rep = state.reputations.get(key);
+    if (!rep) {
+      rep = createScopedReputation(principalId, agentId, scope);
+      state.reputations.set(key, rep);
+    }
+
+    const effectiveScore = computeEffectiveScore(rep.mu, rep.sigma);
+    const currentTier = resolveTier(effectiveScore);
+
+    // Get reviewer's tier (from their own reputation in same scope)
+    const reviewerKey = `${principalId}:${state.agentId}:${scope}`;
+    let reviewerRep = state.reputations.get(reviewerKey);
+    if (!reviewerRep) {
+      reviewerRep = createScopedReputation(principalId, state.agentId!, scope);
+      state.reputations.set(reviewerKey, reviewerRep);
+    }
+    const reviewerScore = computeEffectiveScore(reviewerRep.mu, reviewerRep.sigma);
+    const reviewerTier = resolveTier(reviewerScore);
+
+    // Build evidence portfolio from receipt count (simplified — real impl would aggregate from task history)
+    const evidence: EvidencePortfolio = {
+      scope,
+      totalReceipts: rep.receiptCount,
+      classCounts: { trivial: 0, standard: rep.receiptCount, complex: 0, critical: 0 },
+      distinctReviewers: 1,
+      distinctTaskTypes: 1,
+      failureRate: 0,
+      interventionRate: 0,
+    };
+
+    try {
+      const review = createPromotionReview({
+        agentId, principalId, scope,
+        fromTier: currentTier.tier,
+        toTier,
+        reviewerId: state.agentId!,
+        reviewerTier: reviewerTier.tier,
+        reviewerOrigin: reviewerTier.origin,
+        evidence,
+        effectiveScore,
+        verdict,
+        reasoning,
+        reviewerPrivateKey: state.privateKey,
+        probationDays,
+      });
+
+      state.promotionHistory.push({ review, appliedAt: new Date().toISOString() });
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify(review, null, 2),
+        }],
+      };
+    } catch (err: any) {
+      return { content: [{ type: "text" as const, text: `Promotion review failed: ${err.message}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "update_reputation",
+  "Update an agent's reputation after a task result. Success increases mu and decreases sigma; failure does the opposite. Higher evidence class = larger effect.",
+  {
+    agentId: z.string().describe("Agent whose reputation to update"),
+    principalId: z.string().describe("Principal ID"),
+    scope: z.string().describe("Reputation scope"),
+    success: z.boolean().describe("Whether the task succeeded"),
+    evidenceClass: z.enum(['trivial', 'standard', 'complex', 'critical']).describe("Complexity of the task"),
+  },
+  async ({ agentId, principalId, scope, success, evidenceClass }) => {
+    const key = `${principalId}:${agentId}:${scope}`;
+    let rep = state.reputations.get(key);
+
+    if (!rep) {
+      rep = createScopedReputation(principalId, agentId, scope);
+    }
+
+    const updated = updateReputationFromResult(rep, success, evidenceClass as any);
+    state.reputations.set(key, updated);
+
+    const effectiveScore = computeEffectiveScore(updated.mu, updated.sigma);
+    const tier = resolveTier(effectiveScore);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          agentId, scope,
+          mu: updated.mu, sigma: updated.sigma,
+          effectiveScore,
+          tier: tier.name,
+          receiptCount: updated.receiptCount,
+          result: success ? 'success' : 'failure',
+          evidenceClass,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "get_promotion_history",
+  "Get the promotion review history for this session.",
+  {},
+  async () => {
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          count: state.promotionHistory.length,
+          reviews: state.promotionHistory,
+        }, null, 2),
       }],
     };
   }
