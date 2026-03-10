@@ -8,7 +8,7 @@
 
 MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — cryptographic identity, delegation, governance, and commerce for AI agents.
 
-**44 tools** across all 8 protocol layers. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
+**49 tools** across all 8 protocol layers. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 
@@ -163,7 +163,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.10.2, 443 tests)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.10.2, 470 tests)
 - Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v0.4.0, 86 tests)
 - Paper: [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
