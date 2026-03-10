@@ -163,7 +163,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.10.2, 470 tests)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.11.0, 470 tests)
 - Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v0.4.0, 86 tests)
 - Paper: [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
