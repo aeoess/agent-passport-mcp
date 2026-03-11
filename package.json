@@ -1,6 +1,6 @@
 {
   "name": "agent-passport-system-mcp",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
   "description": "MCP server for Agent Passport System — cryptographic identity, delegation, governance, and deliberation for AI agents",
   "type": "module",
@@ -47,7 +47,7 @@
   "homepage": "https://github.com/aeoess/agent-passport-mcp",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
-    "agent-passport-system": "file:../agent-passport-system/agent-passport-system-1.11.0.tgz",
+    "agent-passport-system": "file:../agent-passport-system/agent-passport-system-1.12.0.tgz",
     "zod": "^3.25.0"
   },
   "devDependencies": {

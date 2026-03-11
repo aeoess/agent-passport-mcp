@@ -62,6 +62,8 @@ import {
   triggerDemotion, updateReputationFromResult,
   DEFAULT_TIERS, DEFAULT_PROMOTION_REQUIREMENTS,
   meetsPromotionRequirements,
+  // Proxy Gateway (Enforcement Boundary)
+  ProxyGateway, createProxyGateway,
 } from "agent-passport-system";
 
 import type {
@@ -76,6 +78,7 @@ import type {
   PrincipalIdentity, PrincipalEndorsement, FleetRecord,
   ScopedReputation, AuthorityTier, TierCheckContext,
   EvidencePortfolio, TierEscalation,
+  GatewayConfig, ToolCallRequest, ToolExecutor,
 } from "agent-passport-system";
 
 // ═══════════════════════════════════════
@@ -120,6 +123,9 @@ interface SessionState {
   // Reputation-Gated Authority (Layer 9)
   reputations: Map<string, ScopedReputation>;   // key: "principalId:agentId:scope"
   promotionHistory: Array<{ review: any; appliedAt: string }>;
+  // Proxy Gateway
+  gateway: ProxyGateway | null;
+  gatewayKeys: { publicKey: string; privateKey: string } | null;
 }
 
 const state: SessionState = {
@@ -145,6 +151,8 @@ const state: SessionState = {
   fleet: null,
   reputations: new Map(),
   promotionHistory: [],
+  gateway: null,
+  gatewayKeys: null,
 };
 
 // Load persisted task state
@@ -2641,6 +2649,278 @@ server.tool(
           count: state.promotionHistory.length,
           reviews: state.promotionHistory,
         }, null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// Proxy Gateway (Enforcement Boundary)
+// ═══════════════════════════════════════
+
+server.tool(
+  "create_gateway",
+  "Create a ProxyGateway enforcement boundary. The gateway validates identity, delegation scope, policy compliance, and provides replay protection for every tool call. Returns gateway ID and public key.",
+  {
+    gatewayId: z.string().optional().describe("Custom gateway ID (auto-generated if omitted)"),
+    approvalTTLSeconds: z.number().optional().describe("Two-phase approval timeout in seconds (default: 300)"),
+    maxPendingPerAgent: z.number().optional().describe("Max pending approvals per agent (default: 10)"),
+  },
+  async ({ gatewayId, approvalTTLSeconds, maxPendingPerAgent }) => {
+    const keys = generateKeyPair();
+    const id = gatewayId || `gateway-${Date.now().toString(36)}`;
+
+    if (!state.floor) {
+      return { content: [{ type: "text" as const, text: "Error: Load a Values Floor first (load_values_floor)" }] };
+    }
+
+    const config: GatewayConfig = {
+      gatewayId: id,
+      gatewayPublicKey: keys.publicKey,
+      gatewayPrivateKey: keys.privateKey,
+      floor: state.floor,
+      approvalTTLSeconds: approvalTTLSeconds ?? 300,
+      maxPendingPerAgent: maxPendingPerAgent ?? 10,
+      recheckRevocationOnExecute: true,
+    };
+
+    // Default executor echoes tool calls — real execution is done by MCP client
+    const executor: ToolExecutor = async (tool: string, params: Record<string, unknown>) => {
+      return { success: true, result: { tool, params, executedVia: 'mcp-gateway' } };
+    };
+
+    state.gateway = createProxyGateway(config, executor);
+    state.gatewayKeys = keys;
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          created: true,
+          gatewayId: id,
+          publicKey: keys.publicKey,
+          approvalTTLSeconds: config.approvalTTLSeconds,
+          maxPendingPerAgent: config.maxPendingPerAgent,
+          note: "Gateway ready. Register agents with register_gateway_agent, then process calls with gateway_process_tool_call.",
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "register_gateway_agent",
+  "Register an agent with the gateway. The agent must have a valid passport and floor attestation. Delegations define what scopes the agent can use through the gateway.",
+  {
+    agentId: z.string().describe("Agent ID to register"),
+  },
+  async ({ agentId }) => {
+    if (!state.gateway) {
+      return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
+    }
+    const agent = state.agents.get(agentId);
+    if (!agent) {
+      return { content: [{ type: "text" as const, text: `Error: Agent "${agentId}" not found in session. Join social contract first.` }] };
+    }
+
+    const agentDelegations = Array.from(state.delegations.values()).filter(
+      d => d.delegatedTo === agent.publicKey
+    );
+
+    if (agentDelegations.length === 0) {
+      return { content: [{ type: "text" as const, text: `Error: No delegations found for agent "${agentId}". Create a delegation first.` }] };
+    }
+
+    if (!agent.attestation) {
+      return { content: [{ type: "text" as const, text: `Error: Agent "${agentId}" has no floor attestation. Attest to floor first.` }] };
+    }
+
+    state.gateway.registerAgent(agent.passport, agent.attestation, agentDelegations);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          registered: true,
+          agentId,
+          delegationCount: agentDelegations.length,
+          scopes: agentDelegations.flatMap(d => d.scope),
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "gateway_process_tool_call",
+  "Process a tool call through the gateway enforcement boundary. Validates identity, delegation, policy, and replay protection in a single atomic operation. Returns execution result with full 3-signature proof chain.",
+  {
+    agentId: z.string().describe("ID of the requesting agent"),
+    tool: z.string().describe("Tool name to execute"),
+    params: z.record(z.unknown()).optional().describe("Tool parameters"),
+    scopeRequired: z.string().describe("Delegation scope needed for this tool"),
+    spendAmount: z.number().optional().describe("Spend amount if commerce action"),
+    spendCurrency: z.string().optional().describe("Currency code (e.g. USD)"),
+    context: z.string().optional().describe("Human-readable context for audit"),
+  },
+  async ({ agentId, tool, params, scopeRequired, spendAmount, spendCurrency, context }) => {
+    if (!state.gateway) {
+      return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
+    }
+
+    const agent = state.agents.get(agentId);
+    if (!agent) {
+      return { content: [{ type: "text" as const, text: `Error: Agent "${agentId}" not found in session.` }] };
+    }
+
+    const { canonicalize } = await import("agent-passport-system");
+    const requestId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const payload = canonicalize({ requestId, agentId, tool, params: params || {}, scopeRequired, spend: spendAmount ? { amount: spendAmount, currency: spendCurrency || 'USD' } : undefined });
+
+    const request: ToolCallRequest = {
+      requestId,
+      agentId,
+      agentPublicKey: agent.publicKey,
+      signature: sign(payload, agent.keyPair.privateKey),
+      tool,
+      params: params || {},
+      scopeRequired,
+      spend: spendAmount ? { amount: spendAmount, currency: spendCurrency || 'USD' } : undefined,
+      context,
+    };
+
+    const result = await state.gateway.processToolCall(request);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          executed: result.executed,
+          requestId: result.requestId,
+          result: result.result ?? undefined,
+          denialReason: result.denialReason ?? undefined,
+          toolError: result.toolError ?? undefined,
+          ...(result.decision && { verdict: result.decision.verdict, reason: result.decision.reason }),
+          ...(result.proof && {
+            proof: {
+              hasRequestSignature: !!result.proof.requestSignature,
+              hasDecisionSignature: !!result.proof.decisionSignature,
+              hasReceiptSignature: !!result.proof.receiptSignature,
+              policyReceiptId: result.proof.policyReceipt?.policyReceiptId,
+            },
+          }),
+          ...(result.receipt && {
+            receipt: {
+              receiptId: result.receipt.receiptId,
+              agentId: result.receipt.agentId,
+              action: result.receipt.action,
+            },
+          }),
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "gateway_approve",
+  "Two-phase execution: approve a tool call without executing it. Returns an approval ID that can be executed later with gateway_execute_approval. Useful for human-in-the-loop workflows.",
+  {
+    agentId: z.string().describe("ID of the requesting agent"),
+    tool: z.string().describe("Tool name to approve"),
+    params: z.record(z.unknown()).optional().describe("Tool parameters"),
+    scopeRequired: z.string().describe("Delegation scope needed"),
+    context: z.string().optional().describe("Human-readable context"),
+  },
+  async ({ agentId, tool, params, scopeRequired, context }) => {
+    if (!state.gateway) {
+      return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
+    }
+
+    const agent = state.agents.get(agentId);
+    if (!agent) {
+      return { content: [{ type: "text" as const, text: `Error: Agent "${agentId}" not found in session.` }] };
+    }
+
+    const { canonicalize } = await import("agent-passport-system");
+    const requestId = `mcp-approve-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const payload = canonicalize({ requestId, agentId, tool, params: params || {}, scopeRequired, spend: undefined });
+
+    const request: ToolCallRequest = {
+      requestId,
+      agentId,
+      agentPublicKey: agent.publicKey,
+      signature: sign(payload, agent.keyPair.privateKey),
+      tool,
+      params: params || {},
+      scopeRequired,
+      context,
+    };
+
+    const result = state.gateway.approve(request);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          approved: result.approved,
+          ...(result.approval && {
+            approvalId: result.approval.approvalId,
+            expiresAt: result.approval.expiresAt,
+            nonce: result.approval.nonce,
+          }),
+          ...(result.denial && { denial: result.denial }),
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "gateway_execute_approval",
+  "Execute a previously approved tool call. Rechecks delegation validity before execution — if delegation was revoked since approval, execution is denied.",
+  {
+    approvalId: z.string().describe("Approval ID from gateway_approve"),
+  },
+  async ({ approvalId }) => {
+    if (!state.gateway) {
+      return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
+    }
+
+    const result = await state.gateway.executeApproval(approvalId);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          executed: result.executed,
+          requestId: result.requestId,
+          result: result.result ?? undefined,
+          denialReason: result.denialReason ?? undefined,
+          ...(result.proof && {
+            proof: {
+              policyReceiptId: result.proof.policyReceipt?.policyReceiptId,
+            },
+          }),
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "gateway_stats",
+  "Get gateway statistics: total requests, permits, denials, replay attempts blocked, active agents, and pending approvals.",
+  {},
+  async () => {
+    if (!state.gateway) {
+      return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify(state.gateway.getStats(), null, 2),
       }],
     };
   }
