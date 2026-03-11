@@ -158,6 +158,17 @@ Add to your MCP config:
 | `update_reputation` | Bayesian (mu, sigma) updates from task results |
 | `get_promotion_history` | List all promotion reviews this session |
 
+### Proxy Gateway — 6 tools
+
+| Tool | Description |
+|------|-------------|
+| `gateway_create` | Create a ProxyGateway with enforcement config and tool executor |
+| `gateway_register_agent` | Register agent (passport + attestation + delegations) with gateway |
+| `gateway_process` | Execute tool call through full enforcement pipeline (identity → scope → policy → execute → receipt) |
+| `gateway_approve` | Two-phase: approve request without executing (returns approval token) |
+| `gateway_execute` | Two-phase: execute previously approved request (rechecks revocation) |
+| `gateway_stats` | Get gateway counters (requests, permits, denials, replays, revocation rechecks) |
+
 ## Architecture
 
 ```
