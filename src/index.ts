@@ -64,10 +64,8 @@ import {
   meetsPromotionRequirements,
   // Proxy Gateway (Enforcement Boundary)
   ProxyGateway, createProxyGateway,
-  // Intent Network (Agent-Mediated Matching)
-  createIntentNetwork, createIntentCard, publishCard, removeCard,
-  searchMatches, requestIntro, respondToIntro, getDigest, getVisibleItems,
-  verifyIntentCard,
+  // Intent Network (Agent-Mediated Matching) — card creation only, API handles persistence
+  createIntentCard, verifyIntentCard,
 } from "agent-passport-system";
 
 import type {
@@ -83,7 +81,6 @@ import type {
   ScopedReputation, AuthorityTier, TierCheckContext,
   EvidencePortfolio, TierEscalation,
   GatewayConfig, ToolCallRequest, ToolExecutor,
-  IntentNetwork, IntentCard, RelevanceMatch, IntroRequest, Digest,
 } from "agent-passport-system";
 
 // ═══════════════════════════════════════
@@ -130,7 +127,6 @@ interface SessionState {
   promotionHistory: Array<{ review: any; appliedAt: string }>;
   // Proxy Gateway
   gateway: ProxyGateway | null;
-  intentNetwork: IntentNetwork;
   gatewayKeys: { publicKey: string; privateKey: string } | null;
 }
 
@@ -159,7 +155,6 @@ const state: SessionState = {
   promotionHistory: [],
   gateway: null,
   gatewayKeys: null,
-  intentNetwork: createIntentNetwork(),
 };
 
 // Load persisted task state
@@ -2935,11 +2930,22 @@ server.tool(
 
 // ═══════════════════════════════════════
 // Intent Network (Agent-Mediated Matching)
+// Calls the hosted API at api.aeoess.com
 // ═══════════════════════════════════════
+
+const INTENT_API = process.env.INTENT_API_URL || 'https://api.aeoess.com';
+
+async function intentApiFetch(path: string, opts?: RequestInit): Promise<any> {
+  const res = await fetch(`${INTENT_API}${path}`, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', 'X-Agent-Id': state.agentId || '', 'X-Public-Key': state.agentKey || '', ...opts?.headers },
+  });
+  return res.json();
+}
 
 server.tool(
   "publish_intent_card",
-  "Publish an IntentCard to the network. Represents what your human needs, offers, and is open to. Cards are signed, scoped, and expire automatically.",
+  "Publish an IntentCard to the Intent Network at aeoess.com. Your card is visible to all agents on the network. Cards are Ed25519 signed, scoped, and expire automatically.",
   {
     principal_alias: z.string().describe("Human's display name or alias"),
     needs: z.array(z.object({
@@ -2990,33 +2996,41 @@ server.tool(
       ttlSeconds: (args.ttl_hours || 24) * 3600,
     });
 
-    const result = publishCard(state.intentNetwork, card);
-    if (!result.published) {
-      return { content: [{ type: "text" as const, text: `Failed to publish: ${result.error}` }], isError: true };
-    }
+    try {
+      const result = await intentApiFetch('/api/cards', {
+        method: 'POST',
+        body: JSON.stringify({ ...card, publicKey: state.agentKey, signature: card.signature }),
+      });
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          published: true,
-          cardId: card.cardId,
-          agentId: card.agentId,
-          principalAlias: card.principalAlias,
-          needs: card.needs.length,
-          offers: card.offers.length,
-          expiresAt: card.expiresAt,
-          networkSize: state.intentNetwork.cards.size,
-          note: 'Card published. Other agents can now discover matches. Use search_matches to find relevant cards.',
-        }, null, 2),
-      }],
-    };
+      if (result.error) {
+        return { content: [{ type: "text" as const, text: `Failed to publish: ${result.error}` }], isError: true };
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            published: true,
+            cardId: result.cardId,
+            agentId: card.agentId,
+            principalAlias: card.principalAlias,
+            needs: card.needs.length,
+            offers: card.offers.length,
+            expiresAt: result.expiresAt,
+            networkSize: result.networkSize,
+            note: 'Card published to Intent Network (api.aeoess.com). Other agents worldwide can now discover matches.',
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `API error: ${e.message}` }], isError: true };
+    }
   }
 );
 
 server.tool(
   "search_matches",
-  "Search the network for IntentCards relevant to your human. Returns ranked matches based on need/offer overlap, tag similarity, and budget compatibility.",
+  "Search the Intent Network for people relevant to you. Returns ranked matches from all agents worldwide based on need/offer overlap, tag similarity, and budget compatibility.",
   {
     min_score: z.number().optional().describe("Minimum relevance score 0-1 (default: 0.1)"),
     max_results: z.number().optional().describe("Maximum results to return (default: 10)"),
@@ -3027,76 +3041,86 @@ server.tool(
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
     const agentId = state.agentId || 'anonymous';
-    const matches = searchMatches(state.intentNetwork, agentId, {
-      minScore: args.min_score,
-      maxResults: args.max_results,
-      categories: args.category_filter ? [args.category_filter] : undefined,
-    });
+    try {
+      const params = new URLSearchParams();
+      if (args.min_score) params.set('minScore', String(args.min_score));
+      if (args.max_results) params.set('max', String(args.max_results));
+      const result = await intentApiFetch(`/api/matches/${agentId}?${params}`);
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          matchCount: matches.length,
-          matches: matches.map(m => {
-            const isA = m.agentA === agentId;
-            return {
+      if (result.error) {
+        return { content: [{ type: "text" as const, text: result.error }], isError: true };
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            matchCount: result.matchCount,
+            totalCandidates: result.totalCandidates,
+            matches: (result.matches || []).map((m: any) => ({
               matchId: m.matchId,
-              otherAgent: isA ? m.agentB : m.agentA,
-              otherCard: isA ? m.cardB : m.cardA,
+              otherAgent: m.agentA === agentId ? m.agentB : m.agentA,
               score: m.score,
               mutual: m.mutual,
-              needOfferMatches: m.needOfferMatches.map(nom => ({
-                needCategory: nom.need.category,
-                offerCategory: nom.offer.category,
-                matchType: nom.matchType,
-                relevanceScore: nom.relevanceScore,
-              })),
               explanation: m.explanation,
-            };
-          }),
-          networkSize: state.intentNetwork.cards.size,
-        }, null, 2),
-      }],
-    };
+              needOfferMatches: (m.needOfferMatches || []).map((nom: any) => ({
+                needCategory: nom.need?.category,
+                offerCategory: nom.offer?.category,
+                matchType: nom.matchType,
+              })),
+            })),
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `API error: ${e.message}` }], isError: true };
+    }
   }
 );
 
 server.tool(
   "get_digest",
-  "Get a personalized digest: relevant matches, pending intro requests, and incoming intros. The killer feature — 'what matters to me right now?'",
+  "Get a personalized digest from the Intent Network: relevant matches, pending intro requests, and incoming intros. The killer feature — 'what matters to me right now?'",
   {},
   async () => {
     const agentId = state.agentId || 'anonymous';
-    const digest = getDigest(state.intentNetwork, agentId);
+    try {
+      const digest = await intentApiFetch(`/api/digest/${agentId}`);
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          agentId: digest.agentId,
-          generatedAt: digest.generatedAt,
-          summary: digest.summary,
-          matchCount: digest.matches.length,
-          topMatches: digest.matches.slice(0, 5).map((m: RelevanceMatch) => {
-            const isA = m.agentA === agentId;
-            return {
-              otherAgent: isA ? m.agentB : m.agentA,
+      if (digest.error) {
+        return { content: [{ type: "text" as const, text: digest.error }], isError: true };
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            agentId: digest.agentId,
+            generatedAt: digest.generatedAt,
+            summary: digest.summary,
+            hasCard: digest.hasCard,
+            networkSize: digest.networkSize,
+            matchCount: (digest.matches || []).length,
+            topMatches: (digest.matches || []).slice(0, 5).map((m: any) => ({
+              otherAgent: m.agentA === agentId ? m.agentB : m.agentA,
               score: m.score,
               explanation: m.explanation,
-            };
-          }),
-          introsPending: digest.introsPending.length,
-          introsReceived: digest.introsReceived.length,
-          introsReceivedDetail: digest.introsReceived.map((intro: IntroRequest) => ({
-            introId: intro.introId,
-            fromAgent: intro.requestedBy,
-            message: intro.message,
-            status: intro.status,
-          })),
-        }, null, 2),
-      }],
-    };
+            })),
+            introsPending: (digest.introsPending || []).length,
+            introsReceived: (digest.introsReceived || []).length,
+            introsReceivedDetail: (digest.introsReceived || []).map((intro: any) => ({
+              introId: intro.introId,
+              fromAgent: intro.requestedBy,
+              message: intro.message,
+              status: intro.status,
+            })),
+            note: !digest.hasCard ? 'No card published yet. Use publish_intent_card to join the network.' : undefined,
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `API error: ${e.message}` }], isError: true };
+    }
   }
 );
 
@@ -3114,16 +3138,20 @@ server.tool(
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
     try {
-      const result = requestIntro(state.intentNetwork, {
-        requestedBy: state.agentId || 'anonymous',
-        targetAgentId: args.target_card_id,
-        matchId: args.match_id,
-        message: args.message,
-        fieldsToDisclose: args.disclose_fields || ['needs', 'offers'],
-        privateKey: state.privateKey!,
+      const result = await intentApiFetch('/api/intros', {
+        method: 'POST',
+        body: JSON.stringify({
+          matchId: args.match_id,
+          targetAgentId: args.target_card_id,
+          message: args.message,
+          fieldsToDisclose: args.disclose_fields || ['needs', 'offers'],
+          agentId: state.agentId,
+          publicKey: state.agentKey,
+          signature: state.privateKey ? sign(args.match_id + args.message, state.privateKey) : '',
+        }),
       });
 
-      if ('error' in result) {
+      if (result.error) {
         return { content: [{ type: "text" as const, text: `Intro request failed: ${result.error}` }], isError: true };
       }
 
@@ -3134,8 +3162,7 @@ server.tool(
             introId: result.introId,
             status: result.status,
             targetAgent: result.targetAgentId,
-            message: result.message,
-            note: 'Intro request sent. The other agent\'s human will see this in their digest and can approve or decline.',
+            note: 'Intro request sent via Intent Network. The other agent\'s human will see this in their digest.',
           }, null, 2),
         }],
       };
@@ -3159,16 +3186,19 @@ server.tool(
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
     try {
-      const result = respondToIntro(state.intentNetwork, {
-        introId: args.intro_id,
-        respondedBy: state.agentId || 'anonymous',
-        verdict: args.approved ? 'approve' : 'decline',
-        message: args.message,
-        disclosedFields: args.disclose_fields ? Object.fromEntries(args.disclose_fields.map(f => [f, 'disclosed'])) : undefined,
-        privateKey: state.privateKey!,
+      const result = await intentApiFetch(`/api/intros/${args.intro_id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          verdict: args.approved ? 'approve' : 'decline',
+          message: args.message,
+          disclosedFields: args.disclose_fields ? Object.fromEntries(args.disclose_fields.map(f => [f, 'disclosed'])) : undefined,
+          agentId: state.agentId,
+          publicKey: state.agentKey,
+          signature: state.privateKey ? sign(args.intro_id + (args.approved ? 'approve' : 'decline'), state.privateKey) : '',
+        }),
       });
 
-      if ('error' in result) {
+      if (result.error) {
         return { content: [{ type: "text" as const, text: `Intro response failed: ${result.error}` }], isError: true };
       }
 
@@ -3177,7 +3207,7 @@ server.tool(
           type: "text" as const,
           text: JSON.stringify({
             introId: result.introId,
-            verdict: result.verdict,
+            status: result.status,
             approved: args.approved,
             note: args.approved
               ? 'Introduction approved. Both parties can now see disclosed information.'
@@ -3193,22 +3223,37 @@ server.tool(
 
 server.tool(
   "remove_intent_card",
-  "Remove your IntentCard from the network. Use when your needs or offers have changed.",
+  "Remove your IntentCard from the Intent Network. Use when your needs or offers have changed.",
   {
     card_id: z.string().describe("Card ID to remove"),
   },
   async (args) => {
-    const removed = removeCard(state.intentNetwork, args.card_id);
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          removed,
-          cardId: args.card_id,
-          networkSize: state.intentNetwork.cards.size,
-        }, null, 2),
-      }],
-    };
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    try {
+      const result = await intentApiFetch(`/api/cards/${args.card_id}`, {
+        method: 'DELETE',
+        body: JSON.stringify({
+          agentId: state.agentId,
+          publicKey: state.agentKey,
+          signature: state.privateKey ? sign(args.card_id, state.privateKey) : '',
+        }),
+      });
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            removed: result.removed || false,
+            cardId: args.card_id,
+            error: result.error,
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `API error: ${e.message}` }], isError: true };
+    }
   }
 );
 
