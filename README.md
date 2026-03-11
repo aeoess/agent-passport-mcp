@@ -8,7 +8,7 @@
 
 MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — cryptographic identity, delegation, governance, and commerce for AI agents.
 
-**61 tools** across all 16 protocol modules. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
+**61 tools** across all 17 protocol modules. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 
