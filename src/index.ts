@@ -64,6 +64,10 @@ import {
   meetsPromotionRequirements,
   // Proxy Gateway (Enforcement Boundary)
   ProxyGateway, createProxyGateway,
+  // Intent Network (Agent-Mediated Matching)
+  createIntentNetwork, createIntentCard, publishCard, removeCard,
+  searchMatches, requestIntro, respondToIntro, getDigest, getVisibleItems,
+  verifyIntentCard,
 } from "agent-passport-system";
 
 import type {
@@ -79,6 +83,7 @@ import type {
   ScopedReputation, AuthorityTier, TierCheckContext,
   EvidencePortfolio, TierEscalation,
   GatewayConfig, ToolCallRequest, ToolExecutor,
+  IntentNetwork, IntentCard, RelevanceMatch, IntroRequest, Digest,
 } from "agent-passport-system";
 
 // ═══════════════════════════════════════
@@ -125,6 +130,7 @@ interface SessionState {
   promotionHistory: Array<{ review: any; appliedAt: string }>;
   // Proxy Gateway
   gateway: ProxyGateway | null;
+  intentNetwork: IntentNetwork;
   gatewayKeys: { publicKey: string; privateKey: string } | null;
 }
 
@@ -153,6 +159,7 @@ const state: SessionState = {
   promotionHistory: [],
   gateway: null,
   gatewayKeys: null,
+  intentNetwork: createIntentNetwork(),
 };
 
 // Load persisted task state
@@ -2921,6 +2928,285 @@ server.tool(
       content: [{
         type: "text" as const,
         text: JSON.stringify(state.gateway.getStats(), null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// Intent Network (Agent-Mediated Matching)
+// ═══════════════════════════════════════
+
+server.tool(
+  "publish_intent_card",
+  "Publish an IntentCard to the network. Represents what your human needs, offers, and is open to. Cards are signed, scoped, and expire automatically.",
+  {
+    principal_alias: z.string().describe("Human's display name or alias"),
+    needs: z.array(z.object({
+      category: z.string().describe("Category (e.g. 'engineering', 'design', 'funding')"),
+      description: z.string().describe("What is needed"),
+      priority: z.enum(["critical", "high", "medium", "low"]).default("medium"),
+      tags: z.array(z.string()).optional(),
+      budget_amount: z.number().optional(),
+      budget_currency: z.string().optional(),
+    })).optional().describe("What the human needs"),
+    offers: z.array(z.object({
+      category: z.string().describe("Category of what's offered"),
+      description: z.string().describe("What is offered"),
+      priority: z.enum(["critical", "high", "medium", "low"]).default("medium"),
+      tags: z.array(z.string()).optional(),
+      budget_amount: z.number().optional(),
+      budget_currency: z.string().optional(),
+    })).optional().describe("What the human offers"),
+    open_to: z.array(z.string()).optional().describe("Categories open to (e.g. ['introductions', 'partnerships'])"),
+    not_open_to: z.array(z.string()).optional().describe("Categories explicitly not open to"),
+    approval_required: z.array(z.string()).optional().describe("What needs human approval before sharing"),
+    visibility: z.enum(["public", "verified", "minimal"]).default("public"),
+    ttl_hours: z.number().default(24).describe("Hours until card expires"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    const mapItem = (item: any) => ({
+      category: item.category,
+      description: item.description,
+      priority: item.priority || 'medium',
+      tags: item.tags || [],
+      budget: item.budget_amount ? { amount: item.budget_amount, currency: item.budget_currency || 'USD' } : undefined,
+      visibility: 'public' as const,
+    });
+
+    const card = createIntentCard({
+      agentId: state.agentId || 'anonymous',
+      principalAlias: args.principal_alias,
+      publicKey: state.agentKey!,
+      privateKey: state.privateKey!,
+      needs: (args.needs || []).map(mapItem),
+      offers: (args.offers || []).map(mapItem),
+      openTo: args.open_to || [],
+      notOpenTo: args.not_open_to || [],
+      approvalRequired: args.approval_required || [],
+      ttlSeconds: (args.ttl_hours || 24) * 3600,
+    });
+
+    const result = publishCard(state.intentNetwork, card);
+    if (!result.published) {
+      return { content: [{ type: "text" as const, text: `Failed to publish: ${result.error}` }], isError: true };
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          published: true,
+          cardId: card.cardId,
+          agentId: card.agentId,
+          principalAlias: card.principalAlias,
+          needs: card.needs.length,
+          offers: card.offers.length,
+          expiresAt: card.expiresAt,
+          networkSize: state.intentNetwork.cards.size,
+          note: 'Card published. Other agents can now discover matches. Use search_matches to find relevant cards.',
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "search_matches",
+  "Search the network for IntentCards relevant to your human. Returns ranked matches based on need/offer overlap, tag similarity, and budget compatibility.",
+  {
+    min_score: z.number().optional().describe("Minimum relevance score 0-1 (default: 0.1)"),
+    max_results: z.number().optional().describe("Maximum results to return (default: 10)"),
+    category_filter: z.string().optional().describe("Only match within this category"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    const agentId = state.agentId || 'anonymous';
+    const matches = searchMatches(state.intentNetwork, agentId, {
+      minScore: args.min_score,
+      maxResults: args.max_results,
+      categories: args.category_filter ? [args.category_filter] : undefined,
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          matchCount: matches.length,
+          matches: matches.map(m => {
+            const isA = m.agentA === agentId;
+            return {
+              matchId: m.matchId,
+              otherAgent: isA ? m.agentB : m.agentA,
+              otherCard: isA ? m.cardB : m.cardA,
+              score: m.score,
+              mutual: m.mutual,
+              needOfferMatches: m.needOfferMatches.map(nom => ({
+                needCategory: nom.need.category,
+                offerCategory: nom.offer.category,
+                matchType: nom.matchType,
+                relevanceScore: nom.relevanceScore,
+              })),
+              explanation: m.explanation,
+            };
+          }),
+          networkSize: state.intentNetwork.cards.size,
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "get_digest",
+  "Get a personalized digest: relevant matches, pending intro requests, and incoming intros. The killer feature — 'what matters to me right now?'",
+  {},
+  async () => {
+    const agentId = state.agentId || 'anonymous';
+    const digest = getDigest(state.intentNetwork, agentId);
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          agentId: digest.agentId,
+          generatedAt: digest.generatedAt,
+          summary: digest.summary,
+          matchCount: digest.matches.length,
+          topMatches: digest.matches.slice(0, 5).map((m: RelevanceMatch) => {
+            const isA = m.agentA === agentId;
+            return {
+              otherAgent: isA ? m.agentB : m.agentA,
+              score: m.score,
+              explanation: m.explanation,
+            };
+          }),
+          introsPending: digest.introsPending.length,
+          introsReceived: digest.introsReceived.length,
+          introsReceivedDetail: digest.introsReceived.map((intro: IntroRequest) => ({
+            introId: intro.introId,
+            fromAgent: intro.requestedBy,
+            message: intro.message,
+            status: intro.status,
+          })),
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+server.tool(
+  "request_intro",
+  "Request an introduction to another agent's human based on a match. Both sides must approve before real information crosses.",
+  {
+    match_id: z.string().describe("Match ID from search_matches"),
+    target_card_id: z.string().describe("Card ID of the agent you want an intro to"),
+    message: z.string().describe("Brief message explaining why this intro would be valuable"),
+    disclose_fields: z.array(z.string()).optional().describe("Fields you're willing to share (e.g. ['needs', 'offers', 'openTo'])"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    try {
+      const result = requestIntro(state.intentNetwork, {
+        requestedBy: state.agentId || 'anonymous',
+        targetAgentId: args.target_card_id,
+        matchId: args.match_id,
+        message: args.message,
+        fieldsToDisclose: args.disclose_fields || ['needs', 'offers'],
+        privateKey: state.privateKey!,
+      });
+
+      if ('error' in result) {
+        return { content: [{ type: "text" as const, text: `Intro request failed: ${result.error}` }], isError: true };
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            introId: result.introId,
+            status: result.status,
+            targetAgent: result.targetAgentId,
+            message: result.message,
+            note: 'Intro request sent. The other agent\'s human will see this in their digest and can approve or decline.',
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Intro request failed: ${e.message}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "respond_to_intro",
+  "Respond to an introduction request. Approve to share your disclosed information, or decline.",
+  {
+    intro_id: z.string().describe("Intro request ID"),
+    approved: z.boolean().describe("Whether to approve the introduction"),
+    message: z.string().optional().describe("Optional response message"),
+    disclose_fields: z.array(z.string()).optional().describe("Fields you're willing to share back"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+    try {
+      const result = respondToIntro(state.intentNetwork, {
+        introId: args.intro_id,
+        respondedBy: state.agentId || 'anonymous',
+        verdict: args.approved ? 'approve' : 'decline',
+        message: args.message,
+        disclosedFields: args.disclose_fields ? Object.fromEntries(args.disclose_fields.map(f => [f, 'disclosed'])) : undefined,
+        privateKey: state.privateKey!,
+      });
+
+      if ('error' in result) {
+        return { content: [{ type: "text" as const, text: `Intro response failed: ${result.error}` }], isError: true };
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            introId: result.introId,
+            verdict: result.verdict,
+            approved: args.approved,
+            note: args.approved
+              ? 'Introduction approved. Both parties can now see disclosed information.'
+              : 'Introduction declined.',
+          }, null, 2),
+        }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: `Intro response failed: ${e.message}` }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "remove_intent_card",
+  "Remove your IntentCard from the network. Use when your needs or offers have changed.",
+  {
+    card_id: z.string().describe("Card ID to remove"),
+  },
+  async (args) => {
+    const removed = removeCard(state.intentNetwork, args.card_id);
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          removed,
+          cardId: args.card_id,
+          networkSize: state.intentNetwork.cards.size,
+        }, null, 2),
       }],
     };
   }

@@ -8,7 +8,7 @@
 
 MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — cryptographic identity, delegation, governance, and commerce for AI agents.
 
-**55 tools** across all 16 protocol modules. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
+**61 tools** across all 16 protocol modules. Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 
@@ -169,6 +169,17 @@ Add to your MCP config:
 | `gateway_execute` | Two-phase: execute previously approved request (rechecks revocation) |
 | `gateway_stats` | Get gateway counters (requests, permits, denials, replays, revocation rechecks) |
 
+### Intent Network (Agent-Mediated Matching) — 6 tools
+
+| Tool | Description |
+|------|-------------|
+| `publish_intent_card` | Publish what your human needs, offers, and is open to. Signed, scoped, auto-expiring |
+| `search_matches` | Find relevant IntentCards — ranked by need/offer overlap, tags, budget compatibility |
+| `get_digest` | "What matters to me right now?" — matches, pending intros, incoming requests |
+| `request_intro` | Propose connecting two humans based on a match. Both sides must approve |
+| `respond_to_intro` | Approve or decline an introduction request |
+| `remove_intent_card` | Remove your card when needs/offers change |
+
 ## Architecture
 
 ```
@@ -184,7 +195,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.12.0, 511 tests)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.13.0, 534 tests)
 - Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v0.4.0, 86 tests)
 - Paper: [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
