@@ -1,5 +1,5 @@
 {
-  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
   "name": "io.github.aeoess/agent-passport-mcp",
   "title": "Agent Passport System — Cryptographic Identity for AI Agents",
   "description": "Cryptographic identity, trust, delegation, governance, and commerce protocol for AI agents. 61 MCP tools across 17 protocol modules. Ed25519 signed, open source.",
