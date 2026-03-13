@@ -1,11 +1,12 @@
 {
   "name": "agent-passport-system-mcp",
-  "version": "2.8.2",
+  "version": "2.8.3",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
   "description": "MCP server for Agent Passport System — cryptographic identity, delegation, governance, and deliberation for AI agents",
   "type": "module",
   "bin": {
-    "agent-passport-system-mcp": "build/index.js"
+    "agent-passport-system-mcp": "build/index.js",
+    "agent-passport-mcp-setup": "build/setup.js"
   },
   "files": [
     "build",
@@ -13,10 +14,11 @@
     "CODE_OF_CONDUCT.md"
   ],
   "scripts": {
-    "build": "tsc && chmod 755 build/index.js",
+    "build": "tsc && chmod 755 build/index.js build/setup.js",
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepublishOnly": "npm run build",
+    "postinstall": "echo '\\n🔑 Agent Passport MCP installed! Run: npx agent-passport-system-mcp setup\\n   Or for zero-install remote: npx agent-passport-system-mcp setup --remote\\n'",
     "postpublish": "cd ~/aeoess_web && node scripts/propagate.mjs --apply --commit 2>/dev/null || echo 'Propagation skipped (aeoess_web not found)'"
   },
   "keywords": [

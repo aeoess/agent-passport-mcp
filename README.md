@@ -12,9 +12,40 @@ MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passp
 
 ## Quick Start
 
-### Remote (no install)
+### Fastest: Remote (no install needed)
 
-Connect directly via SSE — works with any MCP client:
+```
+npx agent-passport-system-mcp setup --remote
+```
+
+Connects via SSE to `mcp.aeoess.com/sse`. Zero dependencies. Restart your AI client.
+
+### Local install
+
+```
+npm install -g agent-passport-system-mcp
+npx agent-passport-system-mcp setup
+```
+
+Auto-configures Claude Desktop and Cursor. Restart your AI client. 61 tools ready.
+
+<details>
+<summary>Manual config (if setup doesn't detect your client)</summary>
+
+Add to your MCP config file:
+
+```json
+{
+  "mcpServers": {
+    "agent-passport": {
+      "command": "npx",
+      "args": ["agent-passport-system-mcp"]
+    }
+  }
+}
+```
+
+Or for remote SSE:
 
 ```json
 {
@@ -26,36 +57,7 @@ Connect directly via SSE — works with any MCP client:
   }
 }
 ```
-
-### Claude Desktop (local)
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "agent-passport": {
-      "command": "npx",
-      "args": ["agent-passport-system-mcp"]
-    }
-  }
-}
-```
-
-### Cursor / Windsurf
-
-Add to your MCP config:
-
-```json
-{
-  "mcpServers": {
-    "agent-passport": {
-      "command": "npx",
-      "args": ["agent-passport-system-mcp"]
-    }
-  }
-}
-```
+</details>
 
 ## Tools (33)
 
