@@ -177,7 +177,7 @@ function loadTasks(): void {
         }
       }
     } catch (e) {
-      console.error('Failed to load task store:', e);
+      console.error('Failed to load task store');
     }
   }
 }
@@ -246,11 +246,21 @@ function isPathWithin(filePath: string, allowedDir: string): boolean {
   return resolve(filePath).startsWith(resolve(allowedDir) + '/');
 }
 
+// Sanitize error messages before returning to clients
+function safeError(prefix: string, e: unknown): string {
+  if (e instanceof Error) {
+    const msg = e.message.replace(/\/[^\s:]+/g, '[path]').replace(/at\s+.+/g, '').slice(0, 200);
+    return `${prefix}: ${msg}`.trim();
+  }
+  return `${prefix}: operation failed`;
+}
+
 function getAgentName(): string {
-  // Derive agent name from agentId (e.g., "claude-001" → "claude")
-  if (state.agentId) return state.agentId.replace(/-\d+$/, '');
-  if (state.agentKey) return state.agentKey.slice(0, 8);
-  return 'unknown';
+  // Derive agent name from agentId — always sanitize to prevent path traversal
+  let name = 'unknown';
+  if (state.agentId) name = state.agentId.replace(/-\d+$/, '');
+  else if (state.agentKey) name = state.agentKey.slice(0, 8);
+  return sanitizeAgentName(name) || 'unknown';
 }
 
 // ── Agora bridge: auto-post coordination events ──
@@ -270,7 +280,7 @@ function loadAgoraFeed(): void {
       };
     }
   } catch {
-    // Non-fatal: start with empty feed if file is corrupted
+    console.error('Agora feed read failed — starting with empty feed');
   }
 }
 
@@ -335,7 +345,7 @@ function loadAgentsRegistry(): Array<{ agentId: string; agentName: string; publi
   try {
     const data = JSON.parse(readFileSync(AGENTS_PATH, 'utf-8'));
     return data.agents || [];
-  } catch { return []; }
+  } catch { /* file read failed */ return []; }
 }
 
 async function signMessage(content: string): Promise<string> {
@@ -753,7 +763,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Error", e) }], isError: true };
     }
   }
 );
@@ -810,7 +820,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Error", e) }], isError: true };
     }
   }
 );
@@ -1184,6 +1194,23 @@ server.tool(
     const keyErr = requireKey();
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
+    // Validate delegation scopes
+    if (!args.scope || args.scope.length === 0) {
+      return { content: [{ type: "text" as const, text: "Delegation must include at least one scope." }], isError: true };
+    }
+    const SCOPE_PATTERN = /^[a-zA-Z0-9_.:/-]+$/;
+    for (const s of args.scope) {
+      if (s === '*' || s === '**') {
+        return { content: [{ type: "text" as const, text: `Wildcard scope "${s}" not allowed. Use explicit scopes.` }], isError: true };
+      }
+      if (s.length > 128) {
+        return { content: [{ type: "text" as const, text: `Scope exceeds max length (128 chars).` }], isError: true };
+      }
+      if (!SCOPE_PATTERN.test(s)) {
+        return { content: [{ type: "text" as const, text: `Scope "${s}" contains invalid characters.` }], isError: true };
+      }
+    }
+
     const delegation = createDelegation({
       delegatedBy: state.agentKey!,
       delegatedTo: args.delegated_to,
@@ -1317,7 +1344,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Sub-delegation failed: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Sub-delegation failed", e) }], isError: true };
     }
   }
 );
@@ -1552,7 +1579,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `❌ Failed to create issue: ${e.message}` }] };
+      return { content: [{ type: "text" as const, text: safeError("Failed to create issue", e) }] };
     }
   }
 );
@@ -1628,6 +1655,9 @@ server.tool(
   async (args) => {
     const name = getAgentName();
     const filePath = join(COMMS_PATH, `to-${name}.json`);
+    if (!isPathWithin(filePath, COMMS_PATH)) {
+      return { content: [{ type: "text" as const, text: "Invalid agent name — path rejected" }] };
+    }
     let messages = readCommsFile(filePath);
 
     const unprocessedOnly = args.unprocessed_only !== false;
@@ -1749,7 +1779,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Failed to load floor: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Failed to load floor", e) }], isError: true };
     }
   }
 );
@@ -1902,7 +1932,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Policy evaluation failed: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Policy evaluation failed", e) }], isError: true };
     }
   }
 );
@@ -2108,7 +2138,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Failed to create context: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Failed to create context", e) }], isError: true };
     }
   }
 );
@@ -2157,7 +2187,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Execute failed: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Execute failed", e) }], isError: true };
     }
   }
 );
@@ -2209,7 +2239,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Complete failed: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Complete failed", e) }], isError: true };
     }
   }
 );
@@ -2593,7 +2623,7 @@ server.tool(
         }],
       };
     } catch (err: any) {
-      return { content: [{ type: "text" as const, text: `Promotion review failed: ${err.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Promotion review failed", err) }], isError: true };
     }
   }
 );
@@ -3023,7 +3053,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `API error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
     }
   }
 );
@@ -3073,7 +3103,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `API error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
     }
   }
 );
@@ -3119,7 +3149,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `API error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
     }
   }
 );
@@ -3167,7 +3197,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Intro request failed: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Intro request failed", e) }], isError: true };
     }
   }
 );
@@ -3216,7 +3246,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `Intro response failed: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("Intro response failed", e) }], isError: true };
     }
   }
 );
@@ -3252,7 +3282,7 @@ server.tool(
         }],
       };
     } catch (e: any) {
-      return { content: [{ type: "text" as const, text: `API error: ${e.message}` }], isError: true };
+      return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
     }
   }
 );
