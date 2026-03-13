@@ -1,12 +1,12 @@
 {
   "name": "agent-passport-system-mcp",
-  "version": "2.8.3",
+  "version": "2.8.4",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
   "description": "MCP server for Agent Passport System — cryptographic identity, delegation, governance, and deliberation for AI agents",
   "type": "module",
   "bin": {
-    "agent-passport-system-mcp": "build/index.js",
-    "agent-passport-mcp-setup": "build/setup.js"
+    "agent-passport-system-mcp": "./build/bin.js",
+    "agent-passport-mcp-setup": "./build/setup.js"
   },
   "files": [
     "build",
@@ -14,7 +14,7 @@
     "CODE_OF_CONDUCT.md"
   ],
   "scripts": {
-    "build": "tsc && chmod 755 build/index.js build/setup.js",
+    "build": "tsc && chmod 755 build/bin.js build/index.js build/setup.js",
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepublishOnly": "npm run build",

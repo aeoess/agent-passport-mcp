@@ -1,11 +1,5 @@
 #!/usr/bin/env node
 
-// Handle "agent-passport-system-mcp setup" command
-if (process.argv[2] === "setup") {
-  await import("./setup.js");
-  process.exit(0);
-}
-
 // ══════════════════════════════════════════════════════════════
 // Agent Passport MCP Server v2.0
 // ══════════════════════════════════════════════════════════════
