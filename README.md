@@ -59,7 +59,7 @@ Or for remote SSE:
 ```
 </details>
 
-## Tools (33)
+## Tools (61)
 
 ### Identity (Layer 1) — 3 tools
 
