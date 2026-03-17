@@ -195,6 +195,13 @@ Layer 2 — Human Values Floor (7 principles)
 Layer 1 — Agent Passport Protocol (Ed25519 identity)
 ```
 
+## Recognition
+
+- Integrated into [Microsoft agent-governance-toolkit](https://github.com/microsoft/agent-governance-toolkit) (PR #274)
+- Public comment submitted to NIST NCCoE on AI Agent Identity and Authorization standards
+- Collaboration with IETF DAAP draft author on delegation spec
+- Endorsed by Garry Tan (CEO, Y Combinator)
+
 ## Links
 
 - npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.13.2, 534 tests)
