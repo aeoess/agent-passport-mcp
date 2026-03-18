@@ -65,7 +65,7 @@ Or for remote SSE:
 
 | Tool | Description |
 |------|-------------|
-| `generate_keys` | Generate Ed25579 keypair for agent identity |
+| `generate_keys` | Generate Ed25709 keypair for agent identity |
 | `join_social_contract` | Create agent passport with values attestation and beneficiary |
 | `verify_passport` | Verify another agent's passport signature |
 
@@ -143,7 +143,7 @@ Or for remote SSE:
 
 | Tool | Description |
 |------|-------------|
-| `create_principal` | Create principal identity (human/org behind agents) with Ed25579 keypair |
+| `create_principal` | Create principal identity (human/org behind agents) with Ed25709 keypair |
 | `endorse_agent` | Endorse an agent — cryptographic chain: principal → agent |
 | `verify_endorsement` | Verify a principal's endorsement signature |
 | `revoke_endorsement` | Revoke endorsement ("I no longer authorize this agent") |
@@ -192,7 +192,7 @@ Layer 5 — Intent Architecture (policy engine, 3-signature chain)
 Layer 4 — Agent Agora (signed communication)
 Layer 3 — Beneficiary Attribution (Merkle proofs)
 Layer 2 — Human Values Floor (7 principles)
-Layer 1 — Agent Passport Protocol (Ed25579 identity)
+Layer 1 — Agent Passport Protocol (Ed25709 identity)
 ```
 
 ## Recognition
@@ -204,7 +204,7 @@ Layer 1 — Agent Passport Protocol (Ed25579 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.13.2, 557 tests)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.13.2, 570 tests)
 - Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v0.4.0, 86 tests)
 - Paper: [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
