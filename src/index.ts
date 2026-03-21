@@ -66,10 +66,40 @@ import {
   ProxyGateway, createProxyGateway,
   // Intent Network (Agent-Mediated Matching) — card creation only, API handles persistence
   createIntentCard, verifyIntentCard,
+  // v2: Constitutional Governance Extensions
+  createPolicyContext, isPolicyContextActive, isPolicyContextInGrace,
+  createArtifactProvenance, verifyArtifactIntegrity,
+  computeDecayedWeight,
+  getUncertaintyRequirements, resolveUncertaintyLevel,
+  evaluateConditions,
+  v1DelegationToV2, v2DelegationToV1,
+  // v2: Delegation Versioning
+  createV2Delegation, supersedeV2Delegation, renewV2Delegation,
+  revokeV2Delegation, validateV2Delegation, traceV2DelegationHistory,
+  clearV2DelegationStore, isScopeExpansion,
+  // v2: Outcome Registration
+  createV2OutcomeRecord, addV2PrincipalReport, addV2AdjudicatedReport,
+  getV2EffectiveDivergence, isV2AgentFlaggedForReview, clearV2OutcomeStore,
+  // v2: Anomaly Detection
+  recordV2Action, checkV2FirstMaxAuthority, validateV2UncertaintyCompliance,
+  computeV2ConcentrationMetrics, clearV2AnomalyStores,
+  // v2: Emergency Pathways
+  defineV2EmergencyPathway, activateV2Emergency, logV2EmergencyAction,
+  reviewV2Emergency, getV2ActiveEmergencies, clearV2EmergencyStores,
+  // v2: Migration
+  requestV2Migration, approveV2Migration, executeV2Migration,
+  isV2InProbation, computeV2MigrationDiscount, traceV2MigrationLineage,
+  rollbackV2Migration, clearV2MigrationStores,
+  // v2: Attestation
+  createV2Attestation, assessV2AttestationQuality, getV2AgentAttestationQualityAvg,
+  clearV2AttestationStore,
 } from "agent-passport-system";
 
 import type {
   CoordinationEventType,
+  PolicyContext, V2Delegation, OutcomeRecord,
+  AnomalyFlag, ConcentrationMetrics, ContextualAttestation,
+  MigrationRecord, ArtifactProvenance,
 } from "agent-passport-system";
 
 import type {
@@ -3283,6 +3313,381 @@ server.tool(
       };
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
+    }
+  }
+);
+
+// ═══════════════════════════════════════
+// v2: Constitutional Governance Tools
+// ═══════════════════════════════════════
+
+server.tool(
+  "create_policy_context",
+  "Create a v2 PolicyContext with mandatory sunset. Every v2 object requires one.",
+  {
+    policy_version: z.string().default("2.0.0"),
+    values_floor_version: z.string().default("1.0.0"),
+    trust_epoch: z.number().default(1),
+    valid_until: z.string().describe("ISO 8601 expiration (mandatory, max 180 days)"),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const ctx = createPolicyContext({
+        policy_version: args.policy_version,
+        values_floor_version: args.values_floor_version,
+        trust_epoch: args.trust_epoch,
+        issuer_id: state.agentKey!,
+        valid_until: args.valid_until,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(ctx, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("PolicyContext creation failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "create_v2_delegation",
+  "Create a v2 delegation with versioning, mandatory sunset, and PolicyContext binding.",
+  {
+    delegatee: z.string().describe("Public key of the agent receiving authority"),
+    scope_categories: z.array(z.string()).describe("Action categories (e.g., ['analysis', 'communication'])"),
+    valid_until: z.string().describe("ISO 8601 expiration"),
+    trust_epoch: z.number().default(1),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const ctx = createPolicyContext({
+        policy_version: "2.0.0", values_floor_version: "1.0.0",
+        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+        valid_until: args.valid_until,
+      });
+      const del = createV2Delegation({
+        delegator: state.agentKey!, delegatee: args.delegatee,
+        scope: { action_categories: args.scope_categories },
+        policy_context: ctx, delegator_private_key: state.privateKey!,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(del, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("v2 delegation failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "supersede_v2_delegation",
+  "Supersede a v2 delegation. Scope narrowing needs justification. Scope expansion also needs independent reviewer.",
+  {
+    original_delegation_id: z.string(),
+    new_scope_categories: z.array(z.string()),
+    justification: z.string(),
+    valid_until: z.string(),
+    trust_epoch: z.number().default(1),
+    expansion_reviewer: z.string().optional().describe("Required if scope expands"),
+    expansion_reviewer_private_key: z.string().optional(),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const ctx = createPolicyContext({
+        policy_version: "2.0.0", values_floor_version: "1.0.0",
+        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+        valid_until: args.valid_until,
+      });
+      const del = supersedeV2Delegation({
+        original_delegation_id: args.original_delegation_id,
+        new_scope: { action_categories: args.new_scope_categories },
+        justification: args.justification,
+        policy_context: ctx, delegator_private_key: state.privateKey!,
+        expansion_reviewer: args.expansion_reviewer,
+        expansion_reviewer_private_key: args.expansion_reviewer_private_key,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(del, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("Supersession failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "create_outcome_record",
+  "Register an action outcome (agent perspective). Part of three-way reporting.",
+  {
+    action_id: z.string(), declared_intent: z.string(),
+    semantic_uncertainty: z.enum(["low", "medium", "high", "critical"]),
+    observed_outcome: z.string(),
+    outcome_class: z.enum(["success", "partial_success", "failure", "unintended_effect", "unknown"]),
+    divergence_score: z.number().min(0).max(1),
+    valid_until: z.string(),
+    trust_epoch: z.number().default(1),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const ctx = createPolicyContext({
+        policy_version: "2.0.0", values_floor_version: "1.0.0",
+        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+        valid_until: args.valid_until,
+      });
+      const record = createV2OutcomeRecord({
+        action_id: args.action_id, agent_id: state.agentKey!,
+        declared_intent: args.declared_intent,
+        semantic_uncertainty: args.semantic_uncertainty as any,
+        observed_outcome: args.observed_outcome,
+        outcome_class: args.outcome_class as any,
+        divergence_score: args.divergence_score,
+        agent_private_key: state.privateKey!,
+        policy_context: ctx,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(record, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("Outcome registration failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "add_principal_report",
+  "Add principal's perspective to an outcome record. Enables three-way divergence reporting.",
+  {
+    outcome_id: z.string(), observed_outcome: z.string(),
+    outcome_class: z.enum(["success", "partial_success", "failure", "unintended_effect", "unknown"]),
+    divergence_score: z.number().min(0).max(1),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const record = addV2PrincipalReport({
+        outcome_id: args.outcome_id, principal_id: state.agentKey!,
+        observed_outcome: args.observed_outcome,
+        outcome_class: args.outcome_class as any,
+        divergence_score: args.divergence_score,
+        principal_private_key: state.privateKey!,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify({ id: record.id, consensus: record.consensus, effective_divergence: getV2EffectiveDivergence(record) }, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("Principal report failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "define_emergency_pathway",
+  "Define a pre-authorized emergency pathway at delegation time. Only the delegator can define these.",
+  {
+    delegation_ref: z.string(), description: z.string(),
+    trigger_field: z.string(), trigger_operator: z.enum(["eq", "neq", "gt", "lt", "gte", "lte"]),
+    trigger_value: z.union([z.string(), z.number(), z.boolean()]),
+    expanded_scope_categories: z.array(z.string()),
+    max_duration: z.string().default("PT1H"),
+    review_deadline: z.string().default("PT24H"),
+    review_authority: z.string(),
+    valid_until: z.string(), trust_epoch: z.number().default(1),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const ctx = createPolicyContext({
+        policy_version: "2.0.0", values_floor_version: "1.0.0",
+        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+        valid_until: args.valid_until,
+      });
+      const pw = defineV2EmergencyPathway({
+        delegation_ref: args.delegation_ref,
+        trigger_conditions: { any_of: [{ field: args.trigger_field, operator: args.trigger_operator, value: args.trigger_value }] },
+        expanded_scope: { action_categories: args.expanded_scope_categories },
+        max_duration: args.max_duration, mandatory_review_deadline: args.review_deadline,
+        review_authority: args.review_authority, description: args.description,
+        policy_context: ctx, delegator_private_key: state.privateKey!,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(pw, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("Emergency pathway failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "activate_emergency",
+  "Activate a pre-authorized emergency pathway with evidence.",
+  {
+    pathway_id: z.string(),
+    trigger_evidence: z.string().describe("Evidence that trigger conditions are met"),
+    valid_until: z.string(), trust_epoch: z.number().default(1),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const ctx = createPolicyContext({
+        policy_version: "2.0.0", values_floor_version: "1.0.0",
+        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+        valid_until: args.valid_until,
+      });
+      const act = activateV2Emergency({
+        pathway_id: args.pathway_id, agent_id: state.agentKey!,
+        trigger_evidence: args.trigger_evidence,
+        agent_private_key: state.privateKey!, policy_context: ctx,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(act, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("Emergency activation failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "create_attestation",
+  "Create a contextual attestation — pre-action reasoning record for medium+ risk actions.",
+  {
+    action_id: z.string(), delegation_ref: z.string(),
+    context_understanding: z.string().describe("Agent's assessment of the situation"),
+    factors_considered: z.array(z.string()).describe("Key decision factors"),
+    alternatives_rejected: z.array(z.object({ alternative: z.string(), reason: z.string() })).default([]),
+    expected_outcome: z.string(),
+    confidence: z.number().min(0).max(1),
+    semantic_uncertainty: z.enum(["low", "medium", "high", "critical"]),
+    required: z.boolean().default(true),
+    valid_until: z.string(), trust_epoch: z.number().default(1),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const ctx = createPolicyContext({
+        policy_version: "2.0.0", values_floor_version: "1.0.0",
+        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+        valid_until: args.valid_until,
+      });
+      const att = createV2Attestation({
+        action_id: args.action_id, agent_id: state.agentKey!,
+        delegation_ref: args.delegation_ref,
+        context_understanding: args.context_understanding,
+        factors_considered: args.factors_considered,
+        alternatives_rejected: args.alternatives_rejected,
+        expected_outcome: args.expected_outcome,
+        confidence: args.confidence,
+        semantic_uncertainty: args.semantic_uncertainty as any,
+        required: args.required, policy_context: ctx,
+        agent_private_key: state.privateKey!,
+      });
+      const quality = assessV2AttestationQuality(att);
+      return { content: [{ type: "text" as const, text: JSON.stringify({ attestation: att, quality }, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("Attestation failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "request_migration",
+  "Request fork-and-sunset migration when current delegation scope is insufficient.",
+  {
+    source_delegation: z.string(),
+    limitation: z.string().describe("What the agent cannot do under current scope"),
+    requested_scope_change: z.string(),
+    justification: z.string(),
+    valid_until: z.string(), trust_epoch: z.number().default(1),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const ctx = createPolicyContext({
+        policy_version: "2.0.0", values_floor_version: "1.0.0",
+        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+        valid_until: args.valid_until,
+      });
+      const req = requestV2Migration({
+        source_agent: state.agentKey!, source_delegation: args.source_delegation,
+        limitation: args.limitation, requested_scope_change: args.requested_scope_change,
+        justification: args.justification, agent_private_key: state.privateKey!,
+        policy_context: ctx,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(req, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("Migration request failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "create_artifact_provenance",
+  "Tag an agent-generated artifact with provenance metadata (content hash, risk class, authoring agent).",
+  {
+    delegation_ref: z.string(), intended_use: z.string(),
+    risk_class: z.enum(["low", "medium", "high", "critical"]),
+    requires_human_execution: z.boolean().default(false),
+    content: z.string().describe("The artifact content (used for hash, not stored)"),
+    artifact_type: z.string().describe("e.g. email_draft, code_script, database_query"),
+    valid_until: z.string(), trust_epoch: z.number().default(1),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const ctx = createPolicyContext({
+        policy_version: "2.0.0", values_floor_version: "1.0.0",
+        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+        valid_until: args.valid_until,
+      });
+      const prov = createArtifactProvenance({
+        authoring_agent: state.agentKey!,
+        authority_scope: { action_categories: ["*"] },
+        delegation_ref: args.delegation_ref, intended_use: args.intended_use,
+        risk_class: args.risk_class as any,
+        requires_human_execution: args.requires_human_execution,
+        content: args.content, artifact_type: args.artifact_type,
+        policy_context: ctx, agent_private_key: state.privateKey!,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(prov, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("Provenance failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "check_anomaly",
+  "Record an action and check for anomalies (first-max-authority, concentration).",
+  {
+    action_id: z.string(), authority_level: z.number(),
+    semantic_uncertainty: z.enum(["low", "medium", "high", "critical"]),
+    risk_class: z.enum(["low", "medium", "high", "critical"]),
+    delegation_ref: z.string(),
+    was_delegated: z.boolean().default(false),
+    complexity: z.number().min(0).max(1).default(0.5),
+  },
+  async (args) => {
+    const keyErr = requireKey();
+    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+    try {
+      const record = {
+        action_id: args.action_id, agent_id: state.agentKey!,
+        authority_level: args.authority_level,
+        semantic_uncertainty: args.semantic_uncertainty as any,
+        risk_class: args.risk_class as any,
+        delegation_ref: args.delegation_ref,
+        was_delegated: args.was_delegated,
+        complexity: args.complexity,
+        timestamp: new Date().toISOString(),
+      };
+      recordV2Action(record);
+      const anomaly = checkV2FirstMaxAuthority(record);
+      const concentration = computeV2ConcentrationMetrics(state.agentKey!);
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        action_recorded: true, anomaly_flag: anomaly, concentration,
+      }, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("Anomaly check failed", e) }], isError: true };
     }
   }
 );
