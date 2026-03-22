@@ -1353,8 +1353,9 @@ server.tool(
       if (!parentDel) return { content: [{ type: "text" as const, text: `Parent delegation ${args.parent_delegation_id} not found in session.` }], isError: true };
 
       // F-3 fix: pre-check revocation before attempting sub-delegation
-      if (parentDel.revoked) {
-        return { content: [{ type: "text" as const, text: `Sub-delegation failed: Parent delegation ${args.parent_delegation_id} is revoked (${parentDel.revokedReason || 'no reason'}).` }], isError: true };
+      const parentStatus = verifyDelegation(parentDel);
+      if (!parentStatus.valid) {
+        return { content: [{ type: "text" as const, text: `Sub-delegation failed: Parent delegation ${args.parent_delegation_id} is invalid (${parentStatus.errors.join(', ')}).` }], isError: true };
       }
 
       const sub = subDelegate({
