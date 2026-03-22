@@ -1352,6 +1352,11 @@ server.tool(
       const parentDel = state.delegations.get(args.parent_delegation_id);
       if (!parentDel) return { content: [{ type: "text" as const, text: `Parent delegation ${args.parent_delegation_id} not found in session.` }], isError: true };
 
+      // F-3 fix: pre-check revocation before attempting sub-delegation
+      if (parentDel.revoked) {
+        return { content: [{ type: "text" as const, text: `Sub-delegation failed: Parent delegation ${args.parent_delegation_id} is revoked (${parentDel.revokedReason || 'no reason'}).` }], isError: true };
+      }
+
       const sub = subDelegate({
         parentDelegation: parentDel,
         delegatedTo: args.delegated_to,
@@ -1985,21 +1990,28 @@ server.tool(
     const keyErr = requireKey();
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
+    // F-1 fix: look up actual delegation from session state for real scope/spend
+    const sessionDel = state.delegations.get(args.delegation_id);
+    const actualSpendLimit = sessionDel?.spendLimit ?? 1000;
+    const hasCommerceScope = sessionDel
+      ? sessionDel.scope.some((s: string) => s === 'commerce' || s === 'commerce:checkout' || s.startsWith('commerce'))
+      : (state.agentContext ? true : false); // fallback to context if no delegation found
+
     // Create a passport for preflight (uses session agent)
     const agent = joinSocialContract({
       name: args.agent_id,
       mission: 'Commerce operation',
       owner: 'mcp-session',
-      capabilities: ['commerce:checkout', 'commerce:browse'],
+      capabilities: hasCommerceScope ? ['commerce:checkout', 'commerce:browse'] : [],
       platform: 'node',
       models: ['mcp'],
     });
 
-    // Look up or create commerce delegation
+    // Look up or create commerce delegation using actual scope/spend
     const commerceDel = createCommerceDelegation({
       agentId: args.agent_id,
       delegationId: args.delegation_id,
-      spendLimit: 1000, // Default, should come from actual delegation
+      spendLimit: actualSpendLimit,
       approvedMerchants: [], // Empty = all merchants allowed
     });
 
@@ -2153,6 +2165,9 @@ server.tool(
 
       state.agentContext = ctx;
       state.floor = floor;
+
+      // F-4 fix: also register in state.agents so gateway and other tools can find this agent
+      state.agents.set(agent.agentId, agent as any);
 
       return {
         content: [{
@@ -2780,9 +2795,20 @@ server.tool(
     if (!state.gateway) {
       return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
     }
-    const agent = state.agents.get(agentId);
+    // F-4 fix: check both state.agents AND state.agentContext for agent data
+    let agent = state.agents.get(agentId);
+    if (!agent && state.agentContext && state.agentId === agentId) {
+      // Agent was created via create_agent_context, bridge to gateway
+      const ctx = state.agentContext;
+      agent = {
+        passport: (ctx as any).agent?.passport || (ctx as any).passport,
+        publicKey: state.agentKey!,
+        agentId: state.agentId!,
+        attestation: (ctx as any).agent?.attestation || (ctx as any).attestation,
+      } as any;
+    }
     if (!agent) {
-      return { content: [{ type: "text" as const, text: `Error: Agent "${agentId}" not found in session. Join social contract first.` }] };
+      return { content: [{ type: "text" as const, text: `Error: Agent "${agentId}" not found in session. Join social contract or create_agent_context first.` }] };
     }
 
     const agentDelegations = Array.from(state.delegations.values()).filter(
