@@ -119,7 +119,7 @@ import {
   buildDataAccessMerkleRoot, verifyDataAccessReceipt,
   createContributionLedger, recordContribution, queryContributions,
   getSourceMetrics, getAgentDataFootprint,
-  generateSettlement, verifySettlement, generateComplianceReport,
+  generateSettlement, verifySettlement, generateDataComplianceReport,
   DataEnforcementGate,
   createTrainingAttribution, verifyTrainingAttribution,
   createTrainingLedger, recordTrainingAttribution,
@@ -3757,7 +3757,7 @@ server.tool(
   {
     contentDescriptor: z.string().describe("Human-readable description of the data"),
     contentCommitment: z.string().describe("SHA-256 hash of the data content"),
-    contentType: z.enum(["dataset", "article", "api", "database", "file", "stream", "model_output"]).describe("Type of data"),
+    contentType: z.enum(["document", "structured_data", "media", "user_input", "model_context"]).describe("Type of data"),
     allowedPurposes: z.array(z.string()).describe("Allowed purposes: read, analyze, summarize, generate, recommend, train, embed, redistribute, commercial"),
     requireAttribution: z.boolean().default(true),
     compensationType: z.enum(["none", "attribution_only", "per_access", "negotiate"]).default("none"),
@@ -3935,7 +3935,7 @@ server.tool(
   },
   async (p) => {
     const kp = generateKeyPair();
-    const report = generateComplianceReport(
+    const report = generateDataComplianceReport(
       state.contributionLedger,
       { startDate: p.startDate, endDate: p.endDate, periodLabel: p.periodLabel },
       p.reportType, kp.privateKey,
