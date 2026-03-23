@@ -182,6 +182,8 @@ interface SessionState {
   contributionLedger: ContributionLedger;
   sourceReceipts: Map<string, SourceReceipt>;
   trainingLedger: TrainingAttributionLedger;
+  // Session passport (created on identify, reused by commerce tools)
+  sessionAgent: SocialContractAgent | null;
 }
 
 const state: SessionState = {
@@ -213,6 +215,7 @@ const state: SessionState = {
   contributionLedger: createContributionLedger(),
   sourceReceipts: new Map(),
   trainingLedger: createTrainingLedger(),
+  sessionAgent: null,
 };
 
 // Load persisted task state
@@ -531,6 +534,16 @@ server.tool(
         }
       }
     }
+
+    // Create session agent passport (reused by commerce and other tools)
+    state.sessionAgent = joinSocialContract({
+      name: state.agentId || args.public_key.slice(0, 12),
+      mission: 'MCP session agent',
+      owner: 'mcp-session',
+      capabilities: ['commerce:checkout', 'commerce:browse', 'coordination', 'agora'],
+      platform: 'node',
+      models: ['mcp'],
+    });
 
     return {
       content: [{
@@ -2109,8 +2122,8 @@ server.tool(
       ? sessionDel.scope.some((s: string) => s === 'commerce' || s === 'commerce:checkout' || s.startsWith('commerce'))
       : (state.agentContext ? true : false); // fallback to context if no delegation found
 
-    // Create a passport for preflight (uses session agent)
-    const agent = joinSocialContract({
+    // Use session agent if available (created by identify), fallback to throwaway
+    const agent = state.sessionAgent || joinSocialContract({
       name: args.agent_id,
       mission: 'Commerce operation',
       owner: 'mcp-session',
