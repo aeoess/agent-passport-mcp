@@ -423,6 +423,89 @@ const server = new McpServer({
 });
 
 // ═══════════════════════════════════════
+// Tool Profiles — expose only relevant tools
+// ═══════════════════════════════════════
+// Set APS_PROFILE env var to limit exposed tools.
+// Default: 'full' (all tools). Options: identity, governance,
+// coordination, commerce, data, gateway, comms, minimal.
+
+const TOOL_PROFILES: Record<string, Set<string>> = {
+  identity: new Set([
+    'identify', 'generate_keys', 'create_principal', 'endorse_agent',
+    'verify_endorsement', 'create_disclosure', 'create_delegation',
+    'verify_delegation', 'revoke_delegation', 'sub_delegate',
+  ]),
+  governance: new Set([
+    'identify', 'generate_keys', 'create_principal',
+    'load_values_floor', 'attest_to_floor', 'create_intent', 'evaluate_intent',
+    'create_agent_context', 'execute_with_context', 'complete_action',
+    'create_delegation', 'verify_delegation', 'revoke_delegation',
+  ]),
+  coordination: new Set([
+    'identify', 'generate_keys',
+    'create_task_brief', 'assign_agent', 'accept_assignment',
+    'submit_evidence', 'review_evidence', 'handoff_evidence',
+    'submit_deliverable', 'complete_task', 'list_tasks', 'get_task_detail',
+    'get_evidence', 'get_my_role',
+  ]),
+  commerce: new Set([
+    'identify', 'generate_keys', 'create_delegation',
+    'commerce_preflight', 'get_commerce_spend', 'request_human_approval',
+  ]),
+  data: new Set([
+    'identify', 'generate_keys', 'create_principal',
+    'register_data_source', 'create_data_enforcement_gate', 'check_data_access',
+    'query_contributions', 'get_source_metrics', 'get_agent_data_footprint',
+    'generate_settlement', 'generate_compliance_report',
+    'record_training_use', 'get_model_data_sources',
+  ]),
+  gateway: new Set([
+    'identify', 'generate_keys', 'create_principal',
+    'create_gateway', 'register_gateway_agent',
+    'gateway_process_tool_call', 'gateway_approve', 'gateway_execute_approval',
+    'gateway_stats', 'create_delegation', 'load_values_floor', 'attest_to_floor',
+  ]),
+  comms: new Set([
+    'identify', 'generate_keys',
+    'post_agora_message', 'get_agora_topics', 'get_agora_thread',
+    'get_agora_by_topic', 'register_agora_agent',
+    'send_message', 'check_messages', 'broadcast', 'list_agents',
+  ]),
+  minimal: new Set([
+    'identify', 'generate_keys', 'create_delegation', 'verify_delegation',
+    'create_intent', 'evaluate_intent', 'list_profiles',
+  ]),
+};
+
+const activeProfile = (process.env.APS_PROFILE || 'full').toLowerCase();
+const profileFilter = TOOL_PROFILES[activeProfile];
+
+// Wrap server.tool to respect profile filtering
+const _origTool: any = server.tool.bind(server);
+(server as any).tool = function(name: string, ...rest: any[]) {
+  if (name === 'list_profiles') return _origTool(name, ...rest);
+  if (activeProfile === 'full' || !profileFilter || profileFilter.has(name)) {
+    return _origTool(name, ...rest);
+  }
+};
+
+// ═══════════════════════════════════════
+// TOOL: list_profiles
+// ═══════════════════════════════════════
+
+server.tool(
+  "list_profiles",
+  "Show available tool profiles. Set APS_PROFILE env var to limit exposed tools (e.g. APS_PROFILE=data).",
+  {},
+  async () => {
+    const lines = Object.entries(TOOL_PROFILES).map(([name, tools]) =>
+      `• ${name} (${tools.size} tools): ${Array.from(tools).slice(0, 6).join(', ')}${tools.size > 6 ? '...' : ''}`
+    );
+    return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '82' : profileFilter?.size || '82'} tools)\n\n${lines.join('\n')}\n\n• full (82 tools): All tools exposed (default)` }] };
+  }
+);
+
+// ═══════════════════════════════════════
 // TOOL: identify
 // ═══════════════════════════════════════
 
