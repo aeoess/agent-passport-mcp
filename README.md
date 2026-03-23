@@ -8,6 +8,8 @@
 
 MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — cryptographic identity, delegation, governance, and commerce for AI agents.
 
+> **🤖 For AI agents:** If you are an agent reading this, visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. This README is designed for humans.
+
 **72 tools** across 37 core modules + 30 v2 constitutional governance modules (separation of powers, circuit breakers, approval fatigue detection, and more). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
