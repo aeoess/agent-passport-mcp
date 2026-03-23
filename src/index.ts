@@ -113,6 +113,25 @@ import type {
   GatewayConfig, ToolCallRequest, ToolExecutor,
 } from "agent-passport-system";
 
+// Data Governance (Modules 36A, 38, 39 + Enforcement Gate + Training Attribution)
+import {
+  registerSelfAttestedSource, recordDataAccess, checkTermsCompliance,
+  buildDataAccessMerkleRoot, verifyDataAccessReceipt,
+  createContributionLedger, recordContribution, queryContributions,
+  getSourceMetrics, getAgentDataFootprint,
+  generateSettlement, verifySettlement, generateComplianceReport,
+  DataEnforcementGate,
+  createTrainingAttribution, verifyTrainingAttribution,
+  createTrainingLedger, recordTrainingAttribution,
+  getModelDataSources, getSourceTrainingCount,
+} from "agent-passport-system";
+
+import type {
+  SourceReceipt, DataAccessReceipt, DataTerms,
+  ContributionLedger, ContributionRecord, SettlementRecord,
+  TrainingAttributionReceipt, TrainingAttributionLedger,
+} from "agent-passport-system";
+
 // ═══════════════════════════════════════
 // State Management
 // ═══════════════════════════════════════
@@ -158,6 +177,11 @@ interface SessionState {
   // Proxy Gateway
   gateway: ProxyGateway | null;
   gatewayKeys: { publicKey: string; privateKey: string } | null;
+  // Data Governance (Modules 36A, 38, 39)
+  dataEnforcementGate: DataEnforcementGate | null;
+  contributionLedger: ContributionLedger;
+  sourceReceipts: Map<string, SourceReceipt>;
+  trainingLedger: TrainingAttributionLedger;
 }
 
 const state: SessionState = {
@@ -185,6 +209,10 @@ const state: SessionState = {
   promotionHistory: [],
   gateway: null,
   gatewayKeys: null,
+  dataEnforcementGate: null,
+  contributionLedger: createContributionLedger(),
+  sourceReceipts: new Map(),
+  trainingLedger: createTrainingLedger(),
 };
 
 // Load persisted task state
@@ -3718,6 +3746,253 @@ server.tool(
     }
   }
 );
+
+// ═══════════════════════════════════════
+// Data Governance Tools (Modules 36A, 38, 39)
+// ═══════════════════════════════════════
+
+server.tool(
+  "register_data_source",
+  "Register a data source with terms for agent access. Returns a signed SourceReceipt.",
+  {
+    contentDescriptor: z.string().describe("Human-readable description of the data"),
+    contentCommitment: z.string().describe("SHA-256 hash of the data content"),
+    contentType: z.enum(["dataset", "article", "api", "database", "file", "stream", "model_output"]).describe("Type of data"),
+    allowedPurposes: z.array(z.string()).describe("Allowed purposes: read, analyze, summarize, generate, recommend, train, embed, redistribute, commercial"),
+    requireAttribution: z.boolean().default(true),
+    compensationType: z.enum(["none", "attribution_only", "per_access", "negotiate"]).default("none"),
+    compensationAmount: z.number().optional().describe("Amount per access (for per_access type)"),
+    compensationCurrency: z.string().default("usd"),
+    maxAccessCount: z.number().optional().describe("Max total accesses allowed"),
+    derivativePolicy: z.enum(["unrestricted", "same_terms", "attribution_required", "no_derivatives"]).default("attribution_required"),
+  },
+  async (p) => {
+    if (!state.agentKey || !state.privateKey) return { content: [{ type: "text", text: "❌ Not identified. Call identify first." }] };
+    const comp = p.compensationType === 'per_access'
+      ? { type: 'per_access' as const, amount: p.compensationAmount || 0.01, currency: p.compensationCurrency }
+      : p.compensationType === 'attribution_only' ? { type: 'attribution_only' as const }
+      : p.compensationType === 'negotiate' ? { type: 'negotiate' as const, contact: state.agentId || '' }
+      : { type: 'none' as const };
+    const terms: DataTerms = {
+      allowedPurposes: p.allowedPurposes as any[],
+      requireAttribution: p.requireAttribution,
+      requireNotification: false,
+      compensation: comp,
+      derivativePolicy: p.derivativePolicy,
+      auditVisibility: 'source_and_principal',
+      revocable: false,
+      maxAccessCount: p.maxAccessCount,
+    };
+    const receipt = registerSelfAttestedSource({
+      ownerPrincipalId: state.principal?.principalId || state.agentId || 'unknown',
+      ownerPublicKey: state.agentKey,
+      ownerPrivateKey: state.privateKey,
+      contentCommitment: p.contentCommitment,
+      contentType: p.contentType,
+      contentDescriptor: p.contentDescriptor,
+      dataTerms: terms,
+    });
+    state.sourceReceipts.set(receipt.sourceReceiptId, receipt);
+    return { content: [{ type: "text", text: `✅ Data source registered.\n\nSource Receipt ID: ${receipt.sourceReceiptId}\nDescriptor: ${p.contentDescriptor}\nAllowed purposes: ${p.allowedPurposes.join(', ')}\nCompensation: ${p.compensationType}${p.compensationAmount ? ' $' + p.compensationAmount : ''}\nMax accesses: ${p.maxAccessCount || 'unlimited'}\nDerivative policy: ${p.derivativePolicy}` }] };
+  }
+);
+
+server.tool(
+  "create_data_enforcement_gate",
+  "Create a data enforcement gate that checks terms before allowing data access. Modes: enforce (block violations), audit (log only), off.",
+  {
+    mode: z.enum(["enforce", "audit", "off"]).default("enforce").describe("Enforcement mode"),
+  },
+  async (p) => {
+    const kp = generateKeyPair();
+    state.dataEnforcementGate = new DataEnforcementGate({
+      gatewayId: 'gw_data_' + Date.now().toString(36),
+      gatewayPublicKey: kp.publicKey,
+      gatewayPrivateKey: kp.privateKey,
+      mode: p.mode,
+    }, state.contributionLedger);
+    // Register all known sources
+    for (const [id, receipt] of state.sourceReceipts) {
+      state.dataEnforcementGate.registerSource(receipt, receipt.contentDescriptor);
+    }
+    return { content: [{ type: "text", text: `✅ Data enforcement gate created.\n\nMode: ${p.mode}\nRegistered sources: ${state.sourceReceipts.size}\nContribution ledger: active` }] };
+  }
+);
+
+server.tool(
+  "check_data_access",
+  "Check if an agent can access a data source through the enforcement gate. Generates receipt and feeds contribution ledger.",
+  {
+    sourceReceiptId: z.string().describe("Source receipt ID to access"),
+    declaredPurpose: z.enum(["read", "analyze", "summarize", "generate", "recommend", "train", "embed", "redistribute", "commercial"]).describe("Declared purpose"),
+    accessMethod: z.enum(["api_call", "file_read", "database_query", "web_fetch", "memory_retrieval", "embedding_lookup", "stream", "human_provided"]).default("api_call"),
+  },
+  async (p) => {
+    if (!state.dataEnforcementGate) return { content: [{ type: "text", text: "❌ No enforcement gate. Call create_data_enforcement_gate first." }] };
+    if (!state.agentKey) return { content: [{ type: "text", text: "❌ Not identified." }] };
+    const decision = state.dataEnforcementGate.checkAccess({
+      agentId: state.agentId || 'unknown',
+      agentPublicKey: state.agentKey,
+      principalId: state.principal?.principalId || 'unknown',
+      sourceReceiptId: p.sourceReceiptId,
+      declaredPurpose: p.declaredPurpose,
+      accessMethod: p.accessMethod,
+      accessScope: 'data:' + p.declaredPurpose,
+      executionFrameId: 'frame_' + Date.now().toString(36),
+    });
+    const status = decision.allowed ? '✅ Access ALLOWED' : '❌ Access DENIED';
+    let text = `${status}\n\nSource: ${p.sourceReceiptId}\nPurpose: ${p.declaredPurpose}`;
+    if (decision.hardViolations.length) text += `\nViolations: ${decision.hardViolations.join('; ')}`;
+    if (decision.advisoryWarnings.length) text += `\nWarnings: ${decision.advisoryWarnings.join('; ')}`;
+    if (decision.receipt) text += `\nReceipt ID: ${decision.receipt.accessReceiptId}`;
+    if (decision.accessesRemaining !== undefined) text += `\nAccesses remaining: ${decision.accessesRemaining}`;
+    return { content: [{ type: "text", text }] };
+  }
+);
+
+server.tool(
+  "query_contributions",
+  "Query the data contribution ledger. Filter by source, agent, principal, purpose, or time range.",
+  {
+    sourceReceiptId: z.string().optional(),
+    agentId: z.string().optional(),
+    principalId: z.string().optional(),
+    purpose: z.string().optional(),
+    minAccessCount: z.number().optional(),
+  },
+  async (p) => {
+    const records = queryContributions(state.contributionLedger, p);
+    if (records.length === 0) return { content: [{ type: "text", text: "No contributions found matching query." }] };
+    const lines = records.map(r =>
+      `• ${r.sourceDescriptor || r.sourceReceiptId}: ${r.accessCount} accesses by ${r.agentId}, purposes: ${r.purposes.join('/')}, owed: $${r.compensationAccrued.totalOwed.toFixed(4)}`
+    );
+    return { content: [{ type: "text", text: `📊 ${records.length} contribution records:\n\n${lines.join('\n')}` }] };
+  }
+);
+
+server.tool(
+  "get_source_metrics",
+  "Get aggregate metrics for a data source: total accesses, unique agents, compensation owed.",
+  {
+    sourceReceiptId: z.string().describe("Source receipt ID"),
+  },
+  async (p) => {
+    const metrics = getSourceMetrics(state.contributionLedger, p.sourceReceiptId);
+    if (!metrics) return { content: [{ type: "text", text: "No data found for this source." }] };
+    return { content: [{ type: "text", text: `📊 Source Metrics: ${metrics.sourceDescriptor}\n\nTotal accesses: ${metrics.totalAccesses}\nUnique agents: ${metrics.uniqueAgents}\nUnique principals: ${metrics.uniquePrincipals}\nCompensation owed: $${metrics.compensationOwed.totalOwed.toFixed(4)} ${metrics.compensationOwed.currency}\nPurpose breakdown: ${JSON.stringify(metrics.purposeBreakdown)}\nTop agents: ${metrics.topAgents.map(a => `${a.agentId} (${a.accessCount})`).join(', ')}` }] };
+  }
+);
+
+server.tool(
+  "get_agent_data_footprint",
+  "Show every data source an agent has accessed, with compensation status.",
+  {
+    agentId: z.string().describe("Agent ID to check"),
+  },
+  async (p) => {
+    const footprint = getAgentDataFootprint(state.contributionLedger, p.agentId);
+    if (!footprint) return { content: [{ type: "text", text: "No data access found for this agent." }] };
+    const sources = footprint.sourcesAccessed.map(s =>
+      `• ${s.sourceDescriptor || s.sourceReceiptId}: ${s.accessCount} accesses, purposes: ${s.purposes.join('/')}, status: ${s.compensationStatus}`
+    );
+    return { content: [{ type: "text", text: `🔍 Agent Data Footprint: ${p.agentId}\n\nTotal sources: ${footprint.totalSources}\nTotal accesses: ${footprint.totalAccesses}\nTotal compensation accrued: $${footprint.totalCompensationAccrued.toFixed(4)} ${footprint.currency}\n\nSources:\n${sources.join('\n')}` }] };
+  }
+);
+
+server.tool(
+  "generate_settlement",
+  "Generate a Merkle-committed, signed settlement record for a period. Shows what's owed to each data source.",
+  {
+    startDate: z.string().describe("Period start (YYYY-MM-DD)"),
+    endDate: z.string().describe("Period end (YYYY-MM-DD)"),
+    periodLabel: z.string().describe("Label (e.g. '2026-Q1', '2026-03')"),
+  },
+  async (p) => {
+    const kp = generateKeyPair();
+    const settlement = generateSettlement(
+      state.contributionLedger,
+      { startDate: p.startDate, endDate: p.endDate, periodLabel: p.periodLabel },
+      kp.publicKey, kp.privateKey,
+    );
+    const verification = verifySettlement(settlement);
+    const lines = settlement.lineItems.map(li =>
+      `• ${li.sourceDescriptor || li.sourceReceiptId}: ${li.accessCount} accesses, $${li.amount.toFixed(4)} (${li.compensationModel})`
+    );
+    return { content: [{ type: "text", text: `📋 Settlement Record: ${settlement.settlementId}\n\nPeriod: ${p.periodLabel}\nTotal: $${settlement.totalAmount.toFixed(4)} ${settlement.currency}\nTotal accesses: ${settlement.totalAccesses}\nUnique sources: ${settlement.uniqueSources}\nUnique payers: ${settlement.uniquePayers}\nMerkle root: ${settlement.merkleRoot.slice(0, 16)}...\nVerification: ${verification.valid ? '✅ VALID' : '❌ INVALID'}\n\nLine items:\n${lines.join('\n')}` }] };
+  }
+);
+
+server.tool(
+  "generate_compliance_report",
+  "Generate a GDPR Article 30 / EU AI Act Article 10 / SOC 2 compliance report.",
+  {
+    reportType: z.enum(["gdpr_article30", "euai_article10", "soc2_data", "general"]).describe("Report type"),
+    startDate: z.string().describe("Period start"),
+    endDate: z.string().describe("Period end"),
+    periodLabel: z.string().describe("Label"),
+    agentId: z.string().optional().describe("Filter by agent"),
+    principalId: z.string().optional().describe("Filter by principal"),
+  },
+  async (p) => {
+    const kp = generateKeyPair();
+    const report = generateComplianceReport(
+      state.contributionLedger,
+      { startDate: p.startDate, endDate: p.endDate, periodLabel: p.periodLabel },
+      p.reportType, kp.privateKey,
+      { agentId: p.agentId, principalId: p.principalId },
+    );
+    return { content: [{ type: "text", text: `📋 Compliance Report: ${report.reportId}\n\nType: ${p.reportType}\nPeriod: ${p.periodLabel}\nTotal data accesses: ${report.summary.totalDataAccesses}\nUnique data sources: ${report.summary.uniqueDataSources}\nPurpose breakdown: ${JSON.stringify(report.summary.purposeBreakdown)}\nCompensation: $${report.summary.compensationSummary.total.toFixed(4)} (pending: $${report.summary.compensationSummary.pending.toFixed(4)})\nTerms violations: ${report.summary.termsViolations}\nAdvisory warnings: ${report.summary.advisoryWarnings}\nSigned: ✅` }] };
+  }
+);
+
+server.tool(
+  "record_training_use",
+  "Record that agent output derived from data sources was used for training/fine-tuning/embedding. Creates a signed training attribution receipt.",
+  {
+    trainingUseType: z.enum(["fine_tune", "lora_adapter", "embedding", "rag_index", "distillation", "evaluation", "synthetic_data"]).describe("Type of training use"),
+    modelId: z.string().describe("Model being trained"),
+    sourceAccessReceiptIds: z.array(z.string()).describe("Access receipt IDs of source data used"),
+    outputContentHash: z.string().describe("SHA-256 of the output used for training"),
+    contributionWeights: z.record(z.number()).optional().describe("Fractional weights per source (sum to 1.0)"),
+    datasetSize: z.number().optional().describe("Number of training examples"),
+  },
+  async (p) => {
+    if (!state.agentKey || !state.privateKey) return { content: [{ type: "text", text: "❌ Not identified." }] };
+    const receipt = createTrainingAttribution({
+      trainingUseType: p.trainingUseType,
+      modelId: p.modelId,
+      trainerId: state.agentId || 'unknown',
+      trainerPublicKey: state.agentKey,
+      trainerPrivateKey: state.privateKey,
+      sourceAccessReceiptIds: p.sourceAccessReceiptIds,
+      executionFrameId: 'frame_train_' + Date.now().toString(36),
+      outputContentHash: p.outputContentHash,
+      inputDataHashes: p.sourceAccessReceiptIds.map(id => id), // simplified
+      contributionWeights: p.contributionWeights,
+      datasetSize: p.datasetSize,
+    });
+    recordTrainingAttribution(state.trainingLedger, receipt);
+    const v = verifyTrainingAttribution(receipt);
+    return { content: [{ type: "text", text: `✅ Training attribution recorded.\n\nReceipt: ${receipt.trainingReceiptId}\nType: ${p.trainingUseType}\nModel: ${p.modelId}\nSources: ${p.sourceAccessReceiptIds.length}\nDataset size: ${p.datasetSize || 'N/A'}\nWeights: ${p.contributionWeights ? JSON.stringify(p.contributionWeights) : 'equal'}\nVerification: ${v.valid ? '✅' : '❌'}` }] };
+  }
+);
+
+server.tool(
+  "get_model_data_sources",
+  "Show which data sources contributed to a model's training, with fractional weights.",
+  {
+    modelId: z.string().describe("Model ID to check"),
+  },
+  async (p) => {
+    const sources = getModelDataSources(state.trainingLedger, p.modelId);
+    if (sources.length === 0) return { content: [{ type: "text", text: "No training data found for this model." }] };
+    const lines = sources.map(s =>
+      `• ${s.accessReceiptId}: weight ${s.weight.toFixed(4)}, type: ${s.trainingUseType}`
+    );
+    return { content: [{ type: "text", text: `🧠 Model Training Sources: ${p.modelId}\n\n${sources.length} data sources contributed:\n${lines.join('\n')}` }] };
+  }
+);
+
 
 // ═══════════════════════════════════════
 // MCP Prompts — Role-Specific
