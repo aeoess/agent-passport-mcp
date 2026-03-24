@@ -40,7 +40,7 @@
     "agent-protocol",
     "typescript"
   ],
-  "author": "aeoess",
+  "author": "Tymofii Pidlisnyi <signal@aeoess.com> (https://aeoess.com)",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
