@@ -99,7 +99,7 @@ function setup() {
     console.log("  Manual setup: add this to your MCP config:\n");
     console.log(JSON.stringify({ mcpServers: { "agent-passport": serverConfig } }, null, 2));
   } else {
-    console.log(`\n  Restart your AI client to activate Agent Passport (61 tools).`);
+    console.log(`\n  Restart your AI client to activate Agent Passport (83 tools).`);
     console.log(`  Then say: "Create an agent identity" or "Delegate authority"\n`);
     if (!useRemote) {
       console.log(`  Tip: Use --remote for zero-install SSE mode: npx agent-passport-system-mcp setup --remote\n`);
