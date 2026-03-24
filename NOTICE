@@ -1,0 +1,12 @@
+Agent Passport System — MCP Server
+Copyright 2024-2026 Tymofii Pidlisnyi
+
+This product includes software developed by
+Tymofii Pidlisnyi (https://aeoess.com).
+
+Licensed under the Apache License, Version 2.0.
+
+The Agent Passport System MCP server exposes the Agent Passport System
+protocol as Model Context Protocol tools. Both the MCP tool definitions
+and the underlying protocol are the intellectual property of
+Tymofii Pidlisnyi.
