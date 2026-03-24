@@ -132,6 +132,25 @@ import type {
   TrainingAttributionReceipt, TrainingAttributionLedger,
 } from "agent-passport-system";
 
+// Data Lifecycle Governance (Modules 43+)
+import {
+  createDerivationReceipt, resolveExtendedLineage,
+  evaluateRevocationImpact, DEFAULT_OBLIGATIONS,
+  createDecisionLineageReceipt, verifyDecisionLineageReceipt,
+  isPurposePermitted, purposeCategory, isRetentionExpired, pinTermsAtAccess,
+  checkAggregateConstraints, isTransferPermitted,
+  computeGovernanceTaint, fileDispute,
+  checkCombinationPermitted, createAccessSnapshot, verifyAccessSnapshot,
+  resolveRightsPropagation, DEFAULT_RIGHTS_PROPAGATION,
+  detectPurposeDrift, declareReidentificationRisk,
+} from "agent-passport-system";
+
+import type {
+  DerivationReceipt, RetentionPolicy, TermsVersionPin,
+  AggregateConstraint, AggregateAccessLog, JurisdictionEnvelope,
+  CombinationConstraint, RightsPropagationRule,
+} from "agent-passport-system";
+
 // ═══════════════════════════════════════
 // State Management
 // ═══════════════════════════════════════
@@ -182,6 +201,7 @@ interface SessionState {
   contributionLedger: ContributionLedger;
   sourceReceipts: Map<string, SourceReceipt>;
   trainingLedger: TrainingAttributionLedger;
+  derivationStore: Map<string, DerivationReceipt>;
   // Session passport (created on identify, reused by commerce tools)
   sessionAgent: SocialContractAgent | null;
 }
@@ -215,6 +235,7 @@ const state: SessionState = {
   contributionLedger: createContributionLedger(),
   sourceReceipts: new Map(),
   trainingLedger: createTrainingLedger(),
+  derivationStore: new Map<string, DerivationReceipt>(),
   sessionAgent: null,
 };
 
@@ -4086,6 +4107,319 @@ server.tool(
       `• ${s.accessReceiptId}: weight ${s.weight.toFixed(4)}, type: ${s.trainingUseType}`
     );
     return { content: [{ type: "text", text: `🧠 Model Training Sources: ${p.modelId}\n\n${sources.length} data sources contributed:\n${lines.join('\n')}` }] };
+  }
+);
+
+
+
+
+// ═══════════════════════════════════════
+// Data Lifecycle Governance Tools
+// ═══════════════════════════════════════
+
+server.tool(
+  "create_derivation_receipt",
+  "Create a signed derivation receipt tracking how data was transformed. Multi-hop lineage with break markers.",
+  {
+    derivativeId: z.string().describe("Unique ID for the derivative artifact"),
+    derivativeType: z.string().describe("Type: rag_chunk, embedding, summary, model_weights, synthetic_derivative, etc."),
+    parentArtifacts: z.array(z.object({
+      artifactId: z.string(),
+      artifactType: z.string(),
+      sourceId: z.string().optional(),
+      transformFromParent: z.string().optional(),
+    })).describe("Parent artifacts this was derived from"),
+    transformClass: z.string().describe("Transform type: copy, subset, summary, embedding, aggregation, synthetic, model_training"),
+    lineageConfidence: z.enum(["complete", "partial", "asserted", "inferred", "broken_external", "unverifiable"]),
+    externalBoundaryBreak: z.boolean().optional().describe("True if data left the system and returned"),
+    breakReason: z.string().optional(),
+    isSyntheticDerivative: z.boolean().optional(),
+    upstreamObligationsRetained: z.boolean().optional(),
+  },
+  async (p) => {
+    const receipt = createDerivationReceipt({
+      ...p,
+      agentId: state.agentId || 'unknown',
+      privateKey: state.privateKey!,
+    });
+    state.derivationStore.set(receipt.derivativeId, receipt);
+    return { content: [{ type: "text", text: `✅ Derivation receipt created.\n\nID: ${receipt.receiptId}\nDerivative: ${receipt.derivativeId}\nType: ${receipt.derivativeType}\nTransform: ${receipt.transformClass}\nConfidence: ${receipt.lineageConfidence}\nBoundary break: ${receipt.externalBoundaryBreak}\nSynthetic: ${receipt.isSyntheticDerivative || false}\nParents: ${receipt.parentArtifacts.length}` }] };
+  }
+);
+
+server.tool(
+  "resolve_lineage",
+  "Resolve the full derivation chain for an artifact. Multi-hop with cycle detection.",
+  {
+    derivativeId: z.string().describe("ID of the derivative to trace"),
+    maxDepth: z.number().optional().describe("Max chain depth (default: 10)"),
+  },
+  async (p) => {
+    const result = resolveExtendedLineage(p.derivativeId, state.derivationStore, p.maxDepth);
+    const chainStr = result.chain.map((r, i) => `  ${i+1}. ${r.derivativeId} (${r.transformClass}, ${r.lineageConfidence})`).join('\n');
+    return { content: [{ type: "text", text: `🔗 Lineage for: ${p.derivativeId}\n\nDepth: ${result.depth}\nConfidence: ${result.confidence}\nHas breaks: ${result.hasBreaks}\n\nChain:\n${chainStr || '  (empty)'}` }] };
+  }
+);
+
+server.tool(
+  "evaluate_revocation_impact",
+  "Evaluate what happens when a data source revokes consent. Propagates obligations through derivation chains.",
+  {
+    sourceId: z.string().describe("Source ID that is revoking consent"),
+  },
+  async (p) => {
+    const result = evaluateRevocationImpact({
+      sourceId: p.sourceId,
+      receiptStore: state.derivationStore,
+      privateKey: state.privateKey!,
+    });
+    const lines = result.affectedArtifacts.map(a =>
+      `  • ${a.artifactId} (${a.artifactType}): ${a.obligation} — ${a.reason}`
+    );
+    return { content: [{ type: "text", text: `⚠️ Revocation Impact: ${p.sourceId}\n\nObligation ID: ${result.obligationId}\nTotal affected: ${result.totalAffected}\n\nAffected artifacts:\n${lines.join('\n') || '  (none)'}` }] };
+  }
+);
+
+server.tool(
+  "create_decision_lineage_receipt",
+  "Create a Decision Lineage Receipt — traces which data sources influenced a decision. Right-to-explanation primitive.",
+  {
+    decisionArtifactId: z.string(),
+    decisionType: z.string().describe("E.g. loan_approval, content_moderation, risk_assessment"),
+    contributingSources: z.array(z.object({
+      sourceId: z.string(),
+      accessReceiptId: z.string(),
+      derivationDepth: z.number(),
+      transformPath: z.array(z.string()),
+      termsVersionAtAccess: z.string(),
+      lineageConfidence: z.enum(["complete", "partial", "asserted", "inferred", "broken_external", "unverifiable"]),
+      compensationStatus: z.enum(["settled", "pending", "disputed", "revoked"]),
+    })),
+    lineageCompleteness: z.enum(["complete", "partial", "asserted", "broken_external"]),
+    transformChain: z.array(z.string()).optional(),
+    governingPurpose: z.string().optional(),
+    explanation: z.string().optional(),
+  },
+  async (p) => {
+    const receipt = createDecisionLineageReceipt({
+      ...p,
+      privateKey: state.privateKey!,
+    });
+    return { content: [{ type: "text", text: `✅ Decision Lineage Receipt created.\n\nID: ${receipt.receiptId}\nDecision: ${receipt.decisionArtifactId}\nType: ${p.decisionType}\nSources: ${receipt.contributingSources.length}\nCompleteness: ${receipt.lineageCompleteness}\nPurpose: ${receipt.governingPurpose || 'N/A'}\nExplanation: ${receipt.explanation || 'N/A'}` }] };
+  }
+);
+
+server.tool(
+  "check_purpose_permitted",
+  "Check if a purpose is permitted under source terms. Supports wildcards (research:*) and hierarchical matching.",
+  {
+    purpose: z.string().describe("Purpose to check (e.g. research:academic, training:model)"),
+    allowedPurposes: z.array(z.string()).describe("Purposes allowed by the source terms"),
+  },
+  async (p) => {
+    const permitted = isPurposePermitted(p.purpose, p.allowedPurposes);
+    const category = purposeCategory(p.purpose);
+    return { content: [{ type: "text", text: `${permitted ? '✅' : '❌'} Purpose "${p.purpose}" (category: ${category}) is ${permitted ? 'PERMITTED' : 'NOT PERMITTED'}\n\nAllowed: [${p.allowedPurposes.join(', ')}]` }] };
+  }
+);
+
+server.tool(
+  "check_retention_expired",
+  "Check if data retention has expired based on TTL policy.",
+  {
+    accessedAt: z.string().describe("ISO timestamp of when data was accessed"),
+    maxRetentionMs: z.number().nullable().describe("Max retention in ms (null = no limit)"),
+    accessType: z.enum(["ephemeral", "persistent"]).optional(),
+  },
+  async (p) => {
+    const policy: RetentionPolicy = { maxRetentionMs: p.maxRetentionMs, onExpiry: 'delete' };
+    const expired = isRetentionExpired(p.accessedAt, policy, p.accessType);
+    return { content: [{ type: "text", text: `${expired ? '⚠️ EXPIRED' : '✅ VALID'} — Retention check for access at ${p.accessedAt}\n\nMax retention: ${p.maxRetentionMs ? `${p.maxRetentionMs / 3600000}h` : 'unlimited'}\nAccess type: ${p.accessType || 'default'}` }] };
+  }
+);
+
+server.tool(
+  "check_aggregate_constraints",
+  "Check if a data access would violate aggregate rate limits.",
+  {
+    maxAccessesPerWindow: z.number().optional(),
+    windowMs: z.number().optional(),
+    burstLimit: z.number().optional(),
+    currentAccessCount: z.number(),
+    currentRecordCount: z.number(),
+    windowStartMs: z.number(),
+    lastAccessMs: z.number(),
+    sourceId: z.string(),
+    agentId: z.string(),
+  },
+  async (p) => {
+    const constraint: AggregateConstraint = {
+      maxAccessesPerWindow: p.maxAccessesPerWindow,
+      windowMs: p.windowMs,
+      burstLimit: p.burstLimit,
+    };
+    const log: AggregateAccessLog = {
+      sourceId: p.sourceId, agentId: p.agentId,
+      windowStartMs: p.windowStartMs,
+      accessCount: p.currentAccessCount,
+      recordCount: p.currentRecordCount,
+      lastAccessMs: p.lastAccessMs,
+    };
+    const result = checkAggregateConstraints(constraint, log);
+    return { content: [{ type: "text", text: `${result.permitted ? '✅ PERMITTED' : '❌ BLOCKED'} — Aggregate check\n\n${result.reason || 'Within limits'}` }] };
+  }
+);
+
+server.tool(
+  "check_jurisdiction_transfer",
+  "Check if a data transfer is permitted under jurisdiction constraints (EU_ONLY, GDPR_ADEQUATE_ONLY, NO_CROSS_BORDER).",
+  {
+    sourceJurisdiction: z.string().describe("ISO 3166-1 alpha-2 code"),
+    targetJurisdiction: z.string().describe("ISO 3166-1 alpha-2 code"),
+    processingRestrictions: z.array(z.string()).optional(),
+    transferConstraints: z.array(z.string()).optional(),
+    purpose: z.string(),
+  },
+  async (p) => {
+    const envelope: JurisdictionEnvelope = {
+      sourceJurisdiction: p.sourceJurisdiction,
+      processingRestrictions: p.processingRestrictions,
+      transferConstraints: p.transferConstraints,
+    };
+    const result = isTransferPermitted(envelope, p.targetJurisdiction, p.purpose);
+    return { content: [{ type: "text", text: `${result.permitted ? '✅ PERMITTED' : '❌ BLOCKED'} — Transfer ${p.sourceJurisdiction} → ${p.targetJurisdiction}\n\n${result.reason || 'No restrictions apply'}` }] };
+  }
+);
+
+server.tool(
+  "compute_governance_taint",
+  "Compute governance taint level for an artifact based on its derivation chain and revoked sources.",
+  {
+    artifactId: z.string(),
+    revokedSources: z.array(z.string()).optional().describe("Source IDs that have been revoked"),
+  },
+  async (p) => {
+    const revokedSet = new Set(p.revokedSources || []);
+    const taint = computeGovernanceTaint(p.artifactId, state.derivationStore, revokedSet);
+    return { content: [{ type: "text", text: `🏷️ Governance Taint: ${p.artifactId}\n\nLevel: ${taint.taintLevel}\nSources: [${taint.sources.join(', ')}]\nReason: ${taint.reason}\nClearable: ${taint.clearable}\n${taint.clearCondition ? `Condition: ${taint.clearCondition}` : ''}` }] };
+  }
+);
+
+server.tool(
+  "file_data_dispute",
+  "File a dispute against a data artifact. The protocol records disputes — resolution is external.",
+  {
+    artifactId: z.string(),
+    disputeType: z.enum(["unauthorized_access", "terms_violation", "compensation_dispute", "revocation_dispute", "lineage_dispute"]),
+    filedBy: z.string(),
+    evidence: z.array(z.string()).describe("Evidence artifact IDs"),
+  },
+  async (p) => {
+    const dispute = fileDispute({
+      ...p,
+      privateKey: state.privateKey!,
+    });
+    return { content: [{ type: "text", text: `⚖️ Dispute filed.\n\nID: ${dispute.disputeId}\nType: ${dispute.disputeType}\nStatus: ${dispute.status}\nArtifact: ${dispute.artifactId}\nEvidence: ${dispute.evidence.length} items` }] };
+  }
+);
+
+server.tool(
+  "check_combination_permitted",
+  "Check if combining data from two sources is permitted. Prevents prohibited inferences (HIPAA, COPPA, GDPR Art 9).",
+  {
+    forbiddenSourceClasses: z.array(z.string()).optional(),
+    forbiddenSourceIds: z.array(z.string()).optional(),
+    reason: z.string(),
+    regulatoryBasis: z.string().optional(),
+    otherSourceId: z.string(),
+    otherSourceClasses: z.array(z.string()).optional(),
+  },
+  async (p) => {
+    const constraints: CombinationConstraint[] = [{
+      forbiddenSourceClasses: p.forbiddenSourceClasses,
+      forbiddenSourceIds: p.forbiddenSourceIds,
+      reason: p.reason,
+      regulatoryBasis: p.regulatoryBasis,
+    }];
+    const result = checkCombinationPermitted(constraints, p.otherSourceId, p.otherSourceClasses);
+    return { content: [{ type: "text", text: `${result.permitted ? '✅ PERMITTED' : '❌ BLOCKED'} — Combination check\n\n${result.violations.length ? result.violations.join('\n') : 'No violations'}` }] };
+  }
+);
+
+server.tool(
+  "create_access_snapshot",
+  "Create an immutable access snapshot — freezes terms, jurisdiction, and constraints at moment of access. Anti-rug-pull.",
+  {
+    accessReceiptId: z.string(),
+    sourceId: z.string(),
+    termsVersion: z.string(),
+    compensationRate: z.number(),
+    currency: z.string(),
+    allowedPurposes: z.array(z.string()),
+    sourceJurisdiction: z.string().optional(),
+  },
+  async (p) => {
+    const pinnedTerms: TermsVersionPin = {
+      termsVersion: p.termsVersion,
+      pinnedAt: new Date().toISOString(),
+      compensationRate: p.compensationRate,
+      currency: p.currency,
+      allowedPurposes: p.allowedPurposes,
+    };
+    const snap = createAccessSnapshot({
+      accessReceiptId: p.accessReceiptId,
+      sourceId: p.sourceId,
+      pinnedTerms,
+      jurisdiction: p.sourceJurisdiction ? { sourceJurisdiction: p.sourceJurisdiction } : undefined,
+      privateKey: state.privateKey!,
+    });
+    return { content: [{ type: "text", text: `📸 Access snapshot created.\n\nID: ${snap.snapshotId}\nSource: ${snap.sourceId}\nTerms hash: ${snap.termsHash}\nRate: ${snap.pinnedTerms.compensationRate} ${snap.pinnedTerms.currency}\nPurposes: [${snap.pinnedTerms.allowedPurposes.join(', ')}]` }] };
+  }
+);
+
+server.tool(
+  "detect_purpose_drift",
+  "Detect when data purpose drifts through a workflow (e.g. research → commercial).",
+  {
+    originalPurpose: z.string(),
+    currentPurpose: z.string(),
+    intermediateSteps: z.array(z.string()).optional(),
+    allowedPurposes: z.array(z.string()),
+  },
+  async (p) => {
+    const result = detectPurposeDrift(p);
+    return { content: [{ type: "text", text: `${result.severity === 'none' ? '✅' : result.severity === 'violation' ? '❌' : '⚠️'} Purpose Drift: ${result.severity}\n\nOriginal: ${result.originalPurpose}\nCurrent: ${result.currentPurpose}\nDrift: ${result.driftDetected}\nPath: ${result.driftPath.join(' → ')}\n${result.explanation}` }] };
+  }
+);
+
+server.tool(
+  "resolve_rights_propagation",
+  "Resolve what rights propagate when data is transformed.",
+  {
+    transformClass: z.string(),
+    sourceDefaultPropagation: z.string().optional().describe("Source-defined default: inherit_full, compensation_only, etc."),
+  },
+  async (p) => {
+    const sourceRule: RightsPropagationRule | undefined = p.sourceDefaultPropagation
+      ? { defaultPropagation: p.sourceDefaultPropagation as any }
+      : undefined;
+    const result = resolveRightsPropagation(p.transformClass, sourceRule);
+    return { content: [{ type: "text", text: `📋 Rights Propagation: ${p.transformClass} → ${result}\n\n${p.sourceDefaultPropagation ? `Source override: ${p.sourceDefaultPropagation}` : `Default: ${DEFAULT_RIGHTS_PROPAGATION[p.transformClass] || 'inherit_partial'}`}` }] };
+  }
+);
+
+server.tool(
+  "declare_reidentification_risk",
+  "Declare re-identification risk for transformed or synthetic data.",
+  {
+    risk: z.enum(["none_declared", "low", "medium", "high", "unknown", "mitigated"]),
+    assessmentMethod: z.string().optional(),
+    mitigationsApplied: z.array(z.string()).optional(),
+    assessedBy: z.string(),
+  },
+  async (p) => {
+    const decl = declareReidentificationRisk(p);
+    return { content: [{ type: "text", text: `🔒 Re-identification Risk Declaration\n\nRisk: ${decl.risk}\nMethod: ${decl.assessmentMethod || 'N/A'}\nMitigations: ${decl.mitigationsApplied?.join(', ') || 'none'}\nAssessed by: ${decl.assessedBy}\nAt: ${decl.assessedAt}` }] };
   }
 );
 
