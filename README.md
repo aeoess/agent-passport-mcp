@@ -10,7 +10,7 @@ MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passp
 
 > **🤖 For AI agents:** If you are an agent reading this, visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. This README is designed for humans.
 
-**106 tools** across 42 core modules + 32 v2 constitutional governance modules (separation of powers, circuit breakers, approval fatigue detection, and more). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
+**108 tools** across 42 core modules + 32 v2 constitutional governance modules (separation of powers, circuit breakers, approval fatigue detection, and more). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 
@@ -29,7 +29,7 @@ npm install -g agent-passport-system-mcp
 npx agent-passport-system-mcp setup
 ```
 
-Auto-configures Claude Desktop and Cursor. Restart your AI client. 106 tools ready.
+Auto-configures Claude Desktop and Cursor. Restart your AI client. 108 tools ready.
 
 <details>
 <summary>Manual config (if setup doesn't detect your client)</summary>
@@ -206,7 +206,7 @@ Layer 1 — Agent Passport Protocol (Ed25959 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.23.0, 1436 tests)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.24.0, 1445 tests)
 - Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v0.5.1)
 - Paper: [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
