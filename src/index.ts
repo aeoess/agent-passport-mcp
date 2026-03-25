@@ -146,6 +146,9 @@ import {
   detectPurposeDrift, declareReidentificationRisk,
   generateGovernanceBlock, verifyGovernanceBlock,
   parseGovernanceBlockFromHTML, isUsagePermitted, embedGovernance,
+  generateApsTxt, verifyApsTxt, resolveTermsForPath,
+  governanceHeaders, parseGovernanceHeaders,
+  createChainedGovernanceBlock, verifyChainedBlock,
 } from "agent-passport-system";
 
 import type {
@@ -4501,6 +4504,87 @@ server.tool(
     const parsed = JSON.parse(p.block);
     const result = isUsagePermitted(parsed, p.usage);
     return { content: [{ type: "text", text: `${result.permitted ? '✅' : '❌'} Usage "${p.usage}": ${result.condition}` }] };
+  }
+);
+
+// ═══════════════════════════════════════
+// aps.txt + HTTP Headers + Chained Blocks
+// ═══════════════════════════════════════
+
+server.tool(
+  "generate_aps_txt",
+  "Generate a signed aps.txt file for site-wide governance. Like robots.txt but cryptographically signed with terms, revocation endpoint, and MCP upgrade path.",
+  {
+    domain: z.string().describe("Domain this declaration covers (e.g. theagenttimes.com)"),
+    publisherName: z.string().describe("Human-readable publisher name"),
+    publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
+    privateKey: z.string().describe("Publisher's Ed25519 private key (hex)"),
+    inference: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+    training: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+    redistribution: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+    mcpEndpoint: z.string().optional(),
+    revocationEndpoint: z.string().optional(),
+  },
+  async (p) => {
+    const doc = generateApsTxt({
+      domain: p.domain, publisherName: p.publisherName,
+      publicKey: p.publicKey, privateKey: p.privateKey,
+      defaultTerms: { inference: p.inference, training: p.training, redistribution: p.redistribution },
+      mcpEndpoint: p.mcpEndpoint, revocationEndpoint: p.revocationEndpoint,
+    });
+    const serialized = JSON.stringify(doc, null, 2);
+    return { content: [{ type: "text", text: `📄 aps.txt Generated\n\nDomain: ${doc.domain}\nDID: ${doc.publisher_did}\nMCP: ${doc.mcp_endpoint || 'none'}\n\nServe at: ${p.domain}/.well-known/aps.txt\n\n${serialized}` }] };
+  }
+);
+
+server.tool(
+  "verify_aps_txt",
+  "Verify a signed aps.txt file — checks signature and DID consistency.",
+  {
+    content: z.string().describe("aps.txt JSON content"),
+    publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
+  },
+  async (p) => {
+    const doc = JSON.parse(p.content);
+    const result = verifyApsTxt(doc, p.publicKey);
+    return { content: [{ type: "text", text: `${result.valid ? '✅' : '❌'} aps.txt Verification: ${result.valid ? 'VALID' : 'INVALID'}${result.errors.length ? '\nErrors: ' + result.errors.join('; ') : ''}` }] };
+  }
+);
+
+server.tool(
+  "resolve_path_terms",
+  "Resolve governance terms for a specific URL path using aps.txt path overrides.",
+  {
+    apsTxt: z.string().describe("aps.txt JSON content"),
+    path: z.string().describe("URL path to resolve (e.g. /blog/my-article)"),
+  },
+  async (p) => {
+    const doc = JSON.parse(p.apsTxt);
+    const terms = resolveTermsForPath(doc, p.path);
+    return { content: [{ type: "text", text: `📋 Terms for "${p.path}":\n${JSON.stringify(terms, null, 2)}` }] };
+  }
+);
+
+server.tool(
+  "create_chained_governance_block",
+  "Create a governance block for derivative content that references the original publisher's block. Preserves the chain of provenance.",
+  {
+    content: z.string().describe("Derivative content"),
+    publicKey: z.string().describe("Derivative agent's Ed25519 public key (hex)"),
+    privateKey: z.string().describe("Derivative agent's Ed25519 private key (hex)"),
+    parentBlock: z.string().describe("Original governance block JSON string"),
+    derivationType: z.string().describe("Type: summary, embedding, rag_chunk, translation, etc."),
+    inference: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+    training: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+  },
+  async (p) => {
+    const parent = JSON.parse(p.parentBlock);
+    const chained = createChainedGovernanceBlock({
+      content: p.content, publicKey: p.publicKey, privateKey: p.privateKey,
+      terms: { inference: p.inference, training: p.training },
+      parentBlock: parent, derivationType: p.derivationType,
+    });
+    return { content: [{ type: "text", text: `🔗 Chained Block Created\n\nOriginal publisher: ${chained.source_did}\nDerivative agent: ${chained.derivative_agent_did}\nDerivation: ${chained.derivation_type}\nParent hash: ${chained.parent_block_hash}\nContent hash: ${chained.content_hash}` }] };
   }
 );
 
