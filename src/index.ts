@@ -149,6 +149,8 @@ import {
   generateApsTxt, verifyApsTxt, resolveTermsForPath,
   governanceHeaders, parseGovernanceHeaders,
   createChainedGovernanceBlock, verifyChainedBlock,
+  checkHTMLGovernance, createAccessReceipt, verifyAccessReceipt,
+  governanceLoop360,
 } from "agent-passport-system";
 
 import type {
@@ -4585,6 +4587,54 @@ server.tool(
       parentBlock: parent, derivationType: p.derivationType,
     });
     return { content: [{ type: "text", text: `🔗 Chained Block Created\n\nOriginal publisher: ${chained.source_did}\nDerivative agent: ${chained.derivative_agent_did}\nDerivation: ${chained.derivation_type}\nParent hash: ${chained.parent_block_hash}\nContent hash: ${chained.content_hash}` }] };
+  }
+);
+
+// ═══════════════════════════════════════
+// Governance Consumer (agent-side 360 loop)
+// ═══════════════════════════════════════
+
+server.tool(
+  "governance_360",
+  "Execute the full governance 360 loop on HTML content: extract governance block → verify signature + content hash → check usage terms → create signed access receipt. This is what an agent calls on every page it reads.",
+  {
+    html: z.string().describe("Full HTML of the page"),
+    contentBody: z.string().describe("Article text content (for hash verification)"),
+    publisherPublicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
+    agentPublicKey: z.string().describe("Your agent's Ed25519 public key (hex)"),
+    agentPrivateKey: z.string().describe("Your agent's Ed25519 private key (hex)"),
+    intendedUsage: z.enum(["inference", "training", "redistribution", "derivative", "caching"]),
+    sourceUrl: z.string().describe("URL of the page"),
+  },
+  async (p) => {
+    const result = governanceLoop360({
+      html: p.html, contentBody: p.contentBody,
+      publisherPublicKey: p.publisherPublicKey,
+      agentPublicKey: p.agentPublicKey, agentPrivateKey: p.agentPrivateKey,
+      intendedUsage: p.intendedUsage, sourceUrl: p.sourceUrl,
+    });
+    return { content: [{ type: "text", text: `🔄 Governance 360 Loop\n\n${result.summary}\n\n${result.receipt ? `Receipt ID: ${result.receipt.receiptId}\nAccessed: ${result.receipt.accessed_at}` : 'No receipt (ungoverned content)'}` }] };
+  }
+);
+
+server.tool(
+  "create_access_receipt",
+  "Create a signed access receipt — cryptographic proof that your agent consumed content under specific terms. The receipt captures terms and revocation policy at access time.",
+  {
+    agentPublicKey: z.string().describe("Your agent's Ed25519 public key (hex)"),
+    agentPrivateKey: z.string().describe("Your agent's Ed25519 private key (hex)"),
+    block: z.string().describe("Governance block JSON string"),
+    sourceUrl: z.string().describe("URL where content was accessed"),
+    intendedUsage: z.string().describe("How you intend to use this content"),
+  },
+  async (p) => {
+    const parsed = JSON.parse(p.block);
+    const receipt = createAccessReceipt({
+      agentPublicKey: p.agentPublicKey, agentPrivateKey: p.agentPrivateKey,
+      block: parsed, sourceUrl: p.sourceUrl, intendedUsage: p.intendedUsage,
+      governanceVerified: true,
+    });
+    return { content: [{ type: "text", text: `📝 Access Receipt Created\n\nID: ${receipt.receiptId}\nAgent: ${receipt.agent_did}\nPublisher: ${receipt.publisher_did}\nUsage: ${receipt.intended_usage}\nTerms: training=${receipt.terms_at_access.training || 'N/A'}\nRevocation: cached=${receipt.revocation_policy_at_access.cached_copy}` }] };
   }
 );
 
