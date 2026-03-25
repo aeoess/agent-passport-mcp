@@ -144,6 +144,8 @@ import {
   checkCombinationPermitted, createAccessSnapshot, verifyAccessSnapshot,
   resolveRightsPropagation, DEFAULT_RIGHTS_PROPAGATION,
   detectPurposeDrift, declareReidentificationRisk,
+  generateGovernanceBlock, verifyGovernanceBlock,
+  parseGovernanceBlockFromHTML, isUsagePermitted, embedGovernance,
 } from "agent-passport-system";
 
 import type {
@@ -4421,6 +4423,84 @@ server.tool(
   async (p) => {
     const decl = declareReidentificationRisk(p);
     return { content: [{ type: "text", text: `🔒 Re-identification Risk Declaration\n\nRisk: ${decl.risk}\nMethod: ${decl.assessmentMethod || 'N/A'}\nMitigations: ${decl.mitigationsApplied?.join(', ') || 'none'}\nAssessed by: ${decl.assessedBy}\nAt: ${decl.assessedAt}` }] };
+  }
+);
+
+// ═══════════════════════════════════════
+// Governance Block (HTML-embedded governance)
+// ═══════════════════════════════════════
+
+server.tool(
+  "generate_governance_block",
+  "Generate a cryptographically signed governance block for embedding in HTML pages. Includes terms, revocation policy, and content hash.",
+  {
+    content: z.string().describe("Article/page content to hash and govern"),
+    publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
+    privateKey: z.string().describe("Publisher's Ed25519 private key (hex)"),
+    inference: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+    training: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+    redistribution: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+    derivative: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+    caching: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+    license_url: z.string().optional(),
+    terms_version: z.string().optional(),
+  },
+  async (p) => {
+    const { block, html, meta } = embedGovernance({
+      content: p.content,
+      publicKey: p.publicKey,
+      privateKey: p.privateKey,
+      terms: {
+        inference: p.inference, training: p.training,
+        redistribution: p.redistribution, derivative: p.derivative,
+        caching: p.caching, license_url: p.license_url, version: p.terms_version,
+      },
+    });
+    return { content: [{ type: "text", text: `📋 Governance Block Generated\n\nDID: ${block.source_did}\nContent Hash: ${block.content_hash}\nTerms: inference=${p.inference || 'not set'}, training=${p.training || 'not set'}\n\n--- HTML EMBED (script tag) ---\n${html}\n\n--- META EMBED (base64) ---\n${meta}` }] };
+  }
+);
+
+server.tool(
+  "verify_governance_block",
+  "Verify a governance block's signature, content hash, and DID consistency against the original content.",
+  {
+    block: z.string().describe("Governance block JSON string"),
+    content: z.string().describe("Original content to verify against"),
+    publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
+  },
+  async (p) => {
+    const parsed = JSON.parse(p.block);
+    const result = verifyGovernanceBlock(parsed, p.content, p.publicKey);
+    return { content: [{ type: "text", text: `🔍 Governance Block Verification\n\nValid: ${result.valid ? '✅' : '❌'}\nSignature: ${result.signatureValid ? '✅' : '❌'}\nContent Hash: ${result.contentHashValid ? '✅' : '❌'}\nDID Consistent: ${result.didConsistent ? '✅' : '❌'}${result.errors.length > 0 ? '\n\nErrors:\n' + result.errors.join('\n') : ''}` }] };
+  }
+);
+
+server.tool(
+  "parse_governance_block_html",
+  "Extract a governance block from an HTML page. Looks for APS governance script tags or meta tags.",
+  {
+    html: z.string().describe("HTML content to parse"),
+  },
+  async (p) => {
+    const block = parseGovernanceBlockFromHTML(p.html);
+    if (!block) {
+      return { content: [{ type: "text", text: "No governance block found in HTML." }] };
+    }
+    return { content: [{ type: "text", text: `📋 Governance Block Found\n\nDID: ${block.source_did}\nContent Hash: ${block.content_hash}\nPublished: ${block.published_at}\nTerms: ${JSON.stringify(block.terms, null, 2)}\nRevocation Policy: ${JSON.stringify(block.revocation_policy, null, 2)}` }] };
+  }
+);
+
+server.tool(
+  "check_usage_permitted",
+  "Check if a specific usage type is permitted under a governance block's terms.",
+  {
+    block: z.string().describe("Governance block JSON string"),
+    usage: z.enum(["inference", "training", "redistribution", "derivative", "caching"]),
+  },
+  async (p) => {
+    const parsed = JSON.parse(p.block);
+    const result = isUsagePermitted(parsed, p.usage);
+    return { content: [{ type: "text", text: `${result.permitted ? '✅' : '❌'} Usage "${p.usage}": ${result.condition}` }] };
   }
 );
 
