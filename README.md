@@ -193,7 +193,7 @@ Layer 6 — Coordination Protocol (task lifecycle)
 Layer 5 — Intent Architecture (policy engine, 3-signature chain)
 Layer 4 — Agent Agora (signed communication)
 Layer 3 — Beneficiary Attribution (Merkle proofs)
-Layer 2 — Human Values Floor (7 principles)
+Layer 2 — Human Values Floor (8 principles)
 Layer 1 — Agent Passport Protocol (Ed25959 identity)
 ```
 
