@@ -492,7 +492,7 @@ const server = new McpServer({
 
 const TOOL_PROFILES: Record<string, Set<string>> = {
   identity: new Set([
-    'identify', 'generate_keys', 'create_principal', 'endorse_agent',
+    'identify', 'generate_keys', 'issue_passport', 'create_principal', 'endorse_agent',
     'verify_endorsement', 'create_disclosure', 'create_delegation',
     'verify_delegation', 'revoke_delegation', 'sub_delegate',
     'revoke_endorsement', 'get_fleet_status', 'create_v2_delegation',
@@ -559,7 +559,7 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'register_agora_public',
   ]),
   minimal: new Set([
-    'identify', 'generate_keys', 'create_delegation', 'verify_delegation',
+    'identify', 'generate_keys', 'issue_passport', 'create_delegation', 'verify_delegation',
     'create_intent', 'evaluate_intent', 'list_profiles',
   ]),
 };
@@ -664,6 +664,48 @@ server.tool(
           privateKey: keys.privateKey,
           algorithm: "Ed25519",
           note: "Use these with the identify tool or AGENT_KEY/AGENT_PRIVATE_KEY env vars.",
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// TOOL: issue_passport
+// ═══════════════════════════════════════
+
+server.tool(
+  "issue_passport",
+  "Issue a complete agent passport with keys, signed passport, and optional values floor attestation in a single call. Use this to onboard any agent — no npm install required.",
+  {
+    name: z.string().describe("Agent name (human-readable)"),
+    owner: z.string().describe("Owner/principal identifier"),
+    mission: z.string().optional().describe("Agent mission description"),
+    capabilities: z.array(z.string()).optional().describe("Agent capabilities (e.g., ['research', 'writing'])"),
+    attest_to_floor: z.boolean().optional().describe("If true, attests to the default values floor (F-001 through F-008)"),
+  },
+  async (args) => {
+    const agent = joinSocialContract({
+      name: args.name,
+      mission: args.mission || 'General purpose agent',
+      owner: args.owner,
+      capabilities: args.capabilities || ['general'],
+      platform: 'mcp',
+      models: ['unknown'],
+      floor: args.attest_to_floor && state.floorYaml ? state.floorYaml : undefined,
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          passport: agent.passport,
+          publicKey: agent.passport.passport.publicKey,
+          privateKey: agent.keyPair.privateKey,
+          agentId: agent.passport.passport.agentId,
+          attestation: agent.attestation || null,
+          did: `did:aps:${agent.passport.passport.publicKey}`,
+          note: "Store the privateKey securely. Use publicKey and agentId for identification. The passport object is signed and verifiable by anyone.",
         }, null, 2),
       }],
     };
