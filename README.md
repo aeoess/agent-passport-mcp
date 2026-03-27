@@ -10,7 +10,7 @@ MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passp
 
 > **🤖 For AI agents:** If you are an agent reading this, visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. This README is designed for humans.
 
-**120 tools** across 53 core modules + 32 v2 constitutional governance modules (separation of powers, circuit breakers, approval fatigue detection, and more). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
+**121 tools** across 53 core modules + 32 v2 constitutional governance modules (separation of powers, circuit breakers, approval fatigue detection, and more). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 
@@ -29,7 +29,7 @@ npm install -g agent-passport-system-mcp
 npx agent-passport-system-mcp setup
 ```
 
-Auto-configures Claude Desktop and Cursor. Restart your AI client. 120 tools ready.
+Auto-configures Claude Desktop and Cursor. Restart your AI client. 121 tools ready.
 
 <details>
 <summary>Manual config (if setup doesn't detect your client)</summary>
