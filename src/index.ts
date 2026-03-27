@@ -241,6 +241,54 @@ interface SessionState {
   approvalRequests: Map<string, ApprovalReq>;
 }
 
+// Default floor YAML for issue_passport attestation (embedded so it works on remote/sandboxed servers)
+const DEFAULT_FLOOR_YAML = `version: "0.1"
+schema: "agent-social-contract/values-floor"
+last_updated: "2026-02-20"
+governance_uri: "https://aeoess.com/protocol.html"
+floor:
+  - id: "F-001"
+    name: "Traceability"
+    principle: "Every agent action must be traceable to a human beneficiary through a cryptographic chain of delegation."
+    enforcement: { mode: inline, mechanism: "Agent Passport delegation chains + action receipts" }
+    weight: "mandatory"
+  - id: "F-002"
+    name: "Honest Identity"
+    principle: "Agents must not misrepresent their identity, capabilities, or authorization."
+    enforcement: { mode: inline, mechanism: "Passport verification, challenge-response protocol" }
+    weight: "mandatory"
+  - id: "F-003"
+    name: "Scoped Authority"
+    principle: "Agents must not take actions beyond authorized scope. Sub-delegations can only narrow scope."
+    enforcement: { mode: inline, mechanism: "Delegation scope arrays, sub-delegation narrowing" }
+    weight: "mandatory"
+  - id: "F-004"
+    name: "Revocability"
+    principle: "Human beneficiary must always retain ability to revoke agent authority with cascade."
+    enforcement: { mode: inline, mechanism: "Delegation revocation with cascade" }
+    weight: "mandatory"
+  - id: "F-005"
+    name: "Auditability"
+    principle: "All inter-agent interactions must be auditable. Action receipts provide cryptographic proof."
+    enforcement: { mode: inline, mechanism: "Signed action receipts with delegation chain" }
+    weight: "mandatory"
+  - id: "F-006"
+    name: "Non-Deception"
+    principle: "Agents must not manipulate, deceive, or coerce other agents or humans."
+    enforcement: { mode: audit, mechanism: "Reputation scoring" }
+    weight: "strong_consideration"
+  - id: "F-007"
+    name: "Proportionality"
+    principle: "Autonomy granted should be proportional to trust earned through verified action history."
+    enforcement: { mode: warn, mechanism: "Reputation scoring, delegation scope recommendations" }
+    weight: "strong_consideration"
+  - id: "F-008"
+    name: "Epistemic Security"
+    principle: "Agents must maintain intellectual honesty. Must not suppress counter-evidence or fabricate supporting evidence."
+    enforcement: { mode: audit, mechanism: "Advisory evaluation, reputation scoring" }
+    weight: "strong_consideration"
+`;
+
 const state: SessionState = {
   agentKey: process.env.AGENT_KEY || null,
   agentRole: null,
@@ -692,7 +740,7 @@ server.tool(
       capabilities: args.capabilities || ['general'],
       platform: 'mcp',
       models: ['unknown'],
-      floor: args.attest_to_floor && state.floorYaml ? state.floorYaml : undefined,
+      floor: args.attest_to_floor ? (state.floorYaml || DEFAULT_FLOOR_YAML) : undefined,
     });
 
     return {
