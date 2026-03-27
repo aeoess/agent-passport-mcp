@@ -159,6 +159,30 @@ import type {
   CombinationConstraint, RightsPropagationRule,
 } from "agent-passport-system";
 
+// Rome-Complete: Charter, Approval, Time, Reserve, Federation
+import {
+  createCharter, signCharter, verifyCharter,
+  createAmendment, signAmendment, verifyAmendment,
+  evaluateThreshold,
+  createOfficeRegistry, createOfficeTransfer,
+  createApprovalRequest, addApprovalSignature, evaluateApprovalRequest,
+  findOffice, findOfficesByHolder, resolveSuccessor,
+  checkIncompatibility, checkQuorum,
+  createHybridTimestamp, createTemporalBound, compareTimestamps,
+  isTemporalBoundExpired, validateTemporalRights,
+  createReserveAttestation, verifyReserveAttestation,
+  compareAssuranceClass, meetsAssuranceRequirement,
+  importReceipt, verifyReceiptEnvelope,
+  vouchReputation, verifyVouchedReputation,
+  applyReputationDowngrade,
+} from "agent-passport-system";
+
+import type {
+  CharterCore, Office, MultiClassThresholdPolicy,
+  ApprovalPolicy, ApprovalRequest as ApprovalReq,
+  GatewayImportPolicy,
+} from "agent-passport-system";
+
 // ═══════════════════════════════════════
 // State Management
 // ═══════════════════════════════════════
@@ -212,6 +236,9 @@ interface SessionState {
   derivationStore: Map<string, DerivationReceipt>;
   // Session passport (created on identify, reused by commerce tools)
   sessionAgent: SocialContractAgent | null;
+  // Rome-Complete: Charter & Institutional Governance
+  charters: Map<string, CharterCore>;
+  approvalRequests: Map<string, ApprovalReq>;
 }
 
 const state: SessionState = {
@@ -245,6 +272,8 @@ const state: SessionState = {
   trainingLedger: createTrainingLedger(),
   derivationStore: new Map<string, DerivationReceipt>(),
   sessionAgent: null,
+  charters: new Map(),
+  approvalRequests: new Map(),
 };
 
 // Load persisted task state
@@ -4640,8 +4669,279 @@ server.tool(
 
 
 // ═══════════════════════════════════════
-// MCP Prompts — Role-Specific
+// Rome-Complete: Charter & Institutional Governance
 // ═══════════════════════════════════════
+
+server.tool(
+  "create_charter",
+  "Create a new institutional charter — the constitutional root of an organization. Defines offices, amendment rules, dissolution policy.",
+  {
+    name: z.string().describe("Institution name"),
+    offices: z.array(z.object({
+      officeId: z.string(),
+      name: z.string(),
+      holderPublicKey: z.string().describe("Ed25519 public key of initial holder"),
+      allowedScopes: z.array(z.string()).default(["*"]),
+      maxSpendPerAction: z.number().default(1000),
+      maxDelegationDepth: z.number().default(3),
+      successionOrder: z.array(z.string()).default([]),
+      incompatibleOffices: z.array(z.string()).optional(),
+    })).describe("Offices to create"),
+    amendment_board_keys: z.array(z.string()).describe("Ed25519 public keys eligible for amendment voting"),
+    amendment_required_sigs: z.number().describe("Signatures required for amendment"),
+    dissolution_grace_seconds: z.number().default(86400),
+    founder_private_key: z.string().describe("Founder's Ed25519 private key"),
+    founder_public_key: z.string().describe("Founder's Ed25519 public key"),
+    founder_role: z.string().default("board"),
+  },
+  async (args) => {
+    const offices = args.offices.map(o => ({
+      officeId: o.officeId,
+      name: o.name,
+      holderMode: 'single' as const,
+      holderSet: [{ publicKey: o.holderPublicKey, appointedAt: new Date().toISOString(), appointedBy: 'charter_founding', isInterim: false }],
+      delegationPolicy: { allowedScopes: o.allowedScopes, maxSpendPerAction: o.maxSpendPerAction, maxDelegationDepth: o.maxDelegationDepth },
+      successionOrder: o.successionOrder,
+      status: 'active' as const,
+      effectiveAt: new Date().toISOString(),
+      incompatibleOffices: o.incompatibleOffices,
+    }));
+    const policy: MultiClassThresholdPolicy = {
+      policyId: 'amend_policy',
+      requirements: [{ role: 'board', requiredSignatures: args.amendment_required_sigs, eligibleKeys: args.amendment_board_keys }],
+      collectionTimeoutSeconds: 86400,
+      onTimeout: 'reject',
+      reevaluateOnRevocation: true,
+    };
+    const charter = createCharter({
+      name: args.name,
+      offices,
+      amendmentPolicy: policy,
+      dissolutionPolicy: {
+        requiresThreshold: policy,
+        gracePeriodSeconds: args.dissolution_grace_seconds,
+        activeEscrowHandling: 'settle_first',
+      },
+      delegationSurvival: { onOfficeChange: 'require_reconfirmation', onCharterAmendment: 'survive_if_compatible' },
+      founderPrivateKey: args.founder_private_key,
+      founderPublicKey: args.founder_public_key,
+      founderRole: args.founder_role,
+    });
+    state.charters.set(charter.charterId, charter);
+    return { content: [{ type: "text", text: `🏛️ Charter Created\n\nID: ${charter.charterId}\nName: ${charter.name}\nVersion: ${charter.version}\nOffices: ${charter.offices.map(o => o.name).join(', ')}\nSignatures: ${charter.foundingSignatures.length}` }] };
+  }
+);
+
+server.tool(
+  "verify_charter",
+  "Verify a charter's integrity: content hash, signatures, office consistency, incompatibility.",
+  { charter_id: z.string().describe("Charter ID to verify") },
+  async (args) => {
+    const charter = state.charters.get(args.charter_id);
+    if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
+    const result = verifyCharter(charter);
+    const status = result.valid ? '✅ VALID' : '❌ INVALID';
+    return { content: [{ type: "text", text: `${status}\n\nContent integrity: ${result.contentIntegrity}\nSignatures valid: ${result.signaturesValid}\nQuorum met: ${result.quorumMet}\nNot dissolved: ${result.notDissolved}\nOffices valid: ${result.officesValid}\nIncompatibility clean: ${result.incompatibilityClean}${result.errors.length ? '\n\nErrors:\n' + result.errors.join('\n') : ''}` }] };
+  }
+);
+
+server.tool(
+  "sign_charter",
+  "Add a founding signature to a charter.",
+  {
+    charter_id: z.string(),
+    signer_private_key: z.string(),
+    signer_public_key: z.string(),
+    signer_role: z.string().default("board"),
+    resigner_private_key: z.string().describe("Key to re-sign the outer charter envelope"),
+  },
+  async (args) => {
+    const charter = state.charters.get(args.charter_id);
+    if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
+    const signed = signCharter(charter, args.signer_private_key, args.signer_public_key, args.signer_role, args.resigner_private_key);
+    state.charters.set(signed.charterId, signed);
+    return { content: [{ type: "text", text: `✅ Signature added to ${signed.charterId}\n\nTotal signatures: ${signed.foundingSignatures.length}\nNew signer role: ${args.signer_role}` }] };
+  }
+);
+
+server.tool(
+  "evaluate_threshold",
+  "Evaluate whether signatures meet a multi-class threshold policy (Consilium Q5).",
+  {
+    charter_id: z.string().describe("Charter whose amendment policy to evaluate against"),
+    signatures: z.array(z.object({
+      publicKey: z.string(),
+      keyClass: z.string(),
+      signedAt: z.string().default(new Date().toISOString()),
+      signature: z.string().default(""),
+    })),
+  },
+  async (args) => {
+    const charter = state.charters.get(args.charter_id);
+    if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
+    const result = evaluateThreshold(charter.amendmentPolicy, args.signatures);
+    const classLines = result.classStatus.map(c => `  ${c.role}: ${c.collected}/${c.required} ${c.satisfied ? '✅' : '❌'}`).join('\n');
+    return { content: [{ type: "text", text: `${result.met ? '✅ THRESHOLD MET' : '❌ THRESHOLD NOT MET'}\n\nClasses:\n${classLines}\n\nTotal: ${result.totalValidSignatures}/${result.totalRequired}${result.errors.length ? '\n\nIssues:\n' + result.errors.join('\n') : ''}` }] };
+  }
+);
+
+server.tool(
+  "create_approval_request",
+  "Create a multi-party approval request for charter amendments, office transfers, etc.",
+  {
+    policy_id: z.string(),
+    subject: z.string().describe("What is being approved (e.g. amendment ID)"),
+    subject_type: z.enum(['charter_amendment', 'delegation', 'office_transfer', 'dissolution', 'escrow_release', 'dispute_resolution']),
+    requested_by: z.string(),
+    timeout_seconds: z.number().default(86400),
+  },
+  async (args) => {
+    const req = createApprovalRequest(args.policy_id, args.subject, args.subject_type, args.requested_by, args.timeout_seconds);
+    state.approvalRequests.set(req.requestId, req);
+    return { content: [{ type: "text", text: `📋 Approval Request Created\n\nID: ${req.requestId}\nSubject: ${req.subject} (${req.subjectType})\nStatus: ${req.status}\nExpires: ${req.expiresAt}` }] };
+  }
+);
+
+server.tool(
+  "add_approval_signature",
+  "Add a signature to an approval request.",
+  {
+    request_id: z.string(),
+    signer_private_key: z.string(),
+    signer_public_key: z.string(),
+    key_class: z.string().default("board"),
+    office_id: z.string().optional(),
+  },
+  async (args) => {
+    const req = state.approvalRequests.get(args.request_id);
+    if (!req) return { content: [{ type: "text", text: `❌ Request ${args.request_id} not found` }] };
+    const updated = addApprovalSignature(req, args.signer_private_key, args.signer_public_key, args.key_class, args.office_id);
+    state.approvalRequests.set(updated.requestId, updated);
+    return { content: [{ type: "text", text: `✅ Signature added\n\nRequest: ${updated.requestId}\nTotal signatures: ${updated.signatures.length}\nStatus: ${updated.status}` }] };
+  }
+);
+
+server.tool(
+  "create_hybrid_timestamp",
+  "Create a gateway-issued hybrid timestamp (Consilium Q1: HLC + NTP uncertainty).",
+  {
+    gateway_id: z.string().describe("Gateway issuing the timestamp"),
+    drift_ms: z.number().default(50).describe("NTP drift bound in milliseconds"),
+  },
+  async (args) => {
+    const ts = createHybridTimestamp(args.gateway_id, args.drift_ms);
+    return { content: [{ type: "text", text: `⏱️ Hybrid Timestamp\n\nLogical time: ${ts.logicalTime}\nWall clock earliest: ${new Date(ts.wallClockEarliest).toISOString()}\nWall clock latest: ${new Date(ts.wallClockLatest).toISOString()}\nGateway: ${ts.gatewayId}\nUncertainty: ±${args.drift_ms}ms` }] };
+  }
+);
+
+server.tool(
+  "compare_timestamps",
+  "Compare two hybrid timestamps to determine ordering.",
+  {
+    a: z.object({ logicalTime: z.number(), wallClockEarliest: z.number(), wallClockLatest: z.number(), gatewayId: z.string() }),
+    b: z.object({ logicalTime: z.number(), wallClockEarliest: z.number(), wallClockLatest: z.number(), gatewayId: z.string() }),
+  },
+  async (args) => {
+    const order = compareTimestamps(args.a, args.b);
+    return { content: [{ type: "text", text: `⏱️ Temporal Ordering: ${order}\n\nA: logical=${args.a.logicalTime} wall=[${args.a.wallClockEarliest},${args.a.wallClockLatest}] gw=${args.a.gatewayId}\nB: logical=${args.b.logicalTime} wall=[${args.b.wallClockEarliest},${args.b.wallClockLatest}] gw=${args.b.gatewayId}` }] };
+  }
+);
+
+server.tool(
+  "validate_temporal_rights",
+  "Validate a TemporalRights object — check validity window, grace period, supersession, challenge window.",
+  {
+    valid_from: z.string().describe("ISO datetime"),
+    valid_until: z.string().describe("ISO datetime"),
+    challenge_until: z.string().optional(),
+    grace_until: z.string().optional(),
+    superseded_at: z.string().optional(),
+    effective_at: z.string().optional(),
+  },
+  async (args) => {
+    const result = validateTemporalRights({
+      validFrom: args.valid_from, validUntil: args.valid_until,
+      challengeUntil: args.challenge_until, graceUntil: args.grace_until,
+      supersededAt: args.superseded_at, effectiveAt: args.effective_at,
+    });
+    return { content: [{ type: "text", text: `⏱️ Temporal Validation\n\nValid: ${result.valid}\nIn grace: ${result.inGracePeriod}\nSuperseded: ${result.superseded}\nChallenge open: ${result.challengeWindowOpen}\nEffective: ${result.effective}${result.errors.length ? '\n\nIssues:\n' + result.errors.join('\n') : ''}` }] };
+  }
+);
+
+server.tool(
+  "create_reserve_attestation",
+  "Create a signed reserve attestation proving a delegation has actual funds (GPT #15).",
+  {
+    delegation_id: z.string(),
+    assurance_class: z.enum(['unbacked', 'self_attested', 'gateway_attested', 'escrow_backed', 'externally_attested']),
+    amount: z.number(),
+    currency: z.string().default("USD"),
+    attestation_basis: z.enum(['api_balance_check', 'bank_statement', 'escrow_lock', 'self_declaration']),
+    false_attestation_penalty: z.enum(['reputation_slash', 'bond_forfeit', 'dispute_eligible', 'none']).default('reputation_slash'),
+    attester_private_key: z.string(),
+    attester_public_key: z.string(),
+    charter_anchor: z.string().optional(),
+    office_id: z.string().optional(),
+    ttl_seconds: z.number().default(86400),
+  },
+  async (args) => {
+    const att = createReserveAttestation({
+      delegationId: args.delegation_id, assuranceClass: args.assurance_class,
+      amount: args.amount, currency: args.currency,
+      liability: { attestationBasis: args.attestation_basis, isRevocable: false, falseAttestationPenalty: args.false_attestation_penalty },
+      attesterPrivateKey: args.attester_private_key, attesterPublicKey: args.attester_public_key,
+      charterAnchor: args.charter_anchor, officeId: args.office_id, ttlSeconds: args.ttl_seconds,
+    });
+    return { content: [{ type: "text", text: `💰 Reserve Attestation Created\n\nID: ${att.attestationId}\nDelegation: ${att.delegationId}\nAssurance: ${att.assuranceClass}\nAmount: ${att.attestedAmount.value} ${att.attestedAmount.currency}\nExpires: ${att.expiresAt}` }] };
+  }
+);
+
+server.tool(
+  "vouch_reputation",
+  "Create a vouched reputation for cross-gateway portability (WS-3). Signed summary — no receipt history exposed.",
+  {
+    agent_id: z.string(),
+    tier: z.number(),
+    diversity_score: z.number(),
+    gateway_private_key: z.string(),
+    gateway_id: z.string(),
+    ttl_seconds: z.number().default(2592000).describe("Default 30 days"),
+  },
+  async (args) => {
+    const rep = vouchReputation({
+      agentId: args.agent_id, tier: args.tier, diversityScore: args.diversity_score,
+      gatewayPrivateKey: args.gateway_private_key, gatewayId: args.gateway_id, ttlSeconds: args.ttl_seconds,
+    });
+    return { content: [{ type: "text", text: `🌐 Vouched Reputation Created\n\nAgent: ${rep.agentId}\nTier: ${rep.attestedTier}\nDiversity: ${rep.attestedDiversityScore}\nGateway: ${rep.originGatewayId}\nExpires: ${rep.expiresAt}` }] };
+  }
+);
+
+server.tool(
+  "apply_reputation_downgrade",
+  "Apply import policy downgrade to a foreign vouched reputation.",
+  {
+    agent_id: z.string(),
+    origin_gateway_id: z.string(),
+    attested_tier: z.number(),
+    attested_diversity_score: z.number(),
+    accept_from: z.array(z.string()).describe("Gateway IDs accepted by import policy"),
+    downgrade_ratio: z.number().default(0.5),
+    foreign_default_tier: z.number().default(0),
+  },
+  async (args) => {
+    const rep = { agentId: args.agent_id, originGatewayId: args.origin_gateway_id, attestedTier: args.attested_tier, attestedDiversityScore: args.attested_diversity_score, attestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(), originGatewaySignature: '' };
+    const policy: GatewayImportPolicy = {
+      receipts: { acceptFrom: args.accept_from, requireWitness: true },
+      reputation: { acceptFrom: args.accept_from, downgradeRatio: args.downgrade_ratio },
+      witnessAttestations: { acceptFrom: args.accept_from, minObservationBasis: 'independent_recomputation' },
+      reserveAttestations: { acceptFrom: [], requireLiabilityClass: true },
+      charterFacts: { acceptFrom: args.accept_from },
+      foreignAgentDefaultTier: args.foreign_default_tier,
+    };
+    const result = applyReputationDowngrade(rep, policy);
+    return { content: [{ type: "text", text: `🌐 Reputation Downgrade\n\nAccepted: ${result.accepted}\nOriginal tier: ${args.attested_tier} → Effective: ${result.effectiveTier}\nOriginal diversity: ${args.attested_diversity_score} → Effective: ${result.effectiveDiversity.toFixed(2)}\nDowngrade ratio: ${args.downgrade_ratio}` }] };
+  }
+);
 
 server.prompt(
   "coordination_role",
