@@ -495,12 +495,24 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'identify', 'generate_keys', 'create_principal', 'endorse_agent',
     'verify_endorsement', 'create_disclosure', 'create_delegation',
     'verify_delegation', 'revoke_delegation', 'sub_delegate',
+    'revoke_endorsement', 'get_fleet_status', 'create_v2_delegation',
+    'supersede_v2_delegation', 'resolve_authority', 'check_tier',
+    'update_reputation', 'get_promotion_history', 'review_promotion',
   ]),
   governance: new Set([
     'identify', 'generate_keys', 'create_principal',
     'load_values_floor', 'attest_to_floor', 'create_intent', 'evaluate_intent',
     'create_agent_context', 'execute_with_context', 'complete_action',
     'create_delegation', 'verify_delegation', 'revoke_delegation',
+    'create_charter', 'sign_charter', 'verify_charter',
+    'evaluate_threshold', 'create_approval_request', 'add_approval_signature',
+    'create_attestation', 'create_outcome_record', 'add_principal_report',
+    'check_anomaly', 'activate_emergency', 'define_emergency_pathway',
+    'request_migration', 'create_artifact_provenance', 'create_policy_context',
+    'generate_governance_block', 'verify_governance_block',
+    'parse_governance_block_html', 'governance_360',
+    'generate_aps_txt', 'verify_aps_txt', 'resolve_path_terms',
+    'create_chained_governance_block', 'compute_governance_taint',
   ]),
   coordination: new Set([
     'identify', 'generate_keys',
@@ -519,18 +531,32 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'query_contributions', 'get_source_metrics', 'get_agent_data_footprint',
     'generate_settlement', 'generate_compliance_report',
     'record_training_use', 'get_model_data_sources',
+    'create_access_receipt', 'create_access_snapshot',
+    'create_derivation_receipt', 'create_decision_lineage_receipt',
+    'resolve_lineage', 'evaluate_revocation_impact',
+    'detect_purpose_drift', 'check_purpose_permitted',
+    'check_usage_permitted', 'check_retention_expired',
+    'check_aggregate_constraints', 'check_combination_permitted',
+    'check_jurisdiction_transfer', 'resolve_rights_propagation',
+    'declare_reidentification_risk', 'file_data_dispute',
   ]),
   gateway: new Set([
     'identify', 'generate_keys', 'create_principal',
     'create_gateway', 'register_gateway_agent',
     'gateway_process_tool_call', 'gateway_approve', 'gateway_execute_approval',
     'gateway_stats', 'create_delegation', 'load_values_floor', 'attest_to_floor',
+    'create_hybrid_timestamp', 'compare_timestamps', 'validate_temporal_rights',
+    'create_reserve_attestation', 'vouch_reputation', 'apply_reputation_downgrade',
+    'evaluate_threshold',
   ]),
   comms: new Set([
     'identify', 'generate_keys',
     'post_agora_message', 'get_agora_topics', 'get_agora_thread',
     'get_agora_by_topic', 'register_agora_agent',
     'send_message', 'check_messages', 'broadcast', 'list_agents',
+    'publish_intent_card', 'remove_intent_card', 'search_matches',
+    'request_intro', 'respond_to_intro', 'get_digest',
+    'register_agora_public',
   ]),
   minimal: new Set([
     'identify', 'generate_keys', 'create_delegation', 'verify_delegation',
@@ -562,7 +588,7 @@ server.tool(
     const lines = Object.entries(TOOL_PROFILES).map(([name, tools]) =>
       `• ${name} (${tools.size} tools): ${Array.from(tools).slice(0, 6).join(', ')}${tools.size > 6 ? '...' : ''}`
     );
-    return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '82' : profileFilter?.size || '82'} tools)\n\n${lines.join('\n')}\n\n• full (82 tools): All tools exposed (default)` }] };
+    return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '120' : profileFilter?.size || '120'} tools)\n\n${lines.join('\n')}\n\n• full (120 tools): All tools exposed (default)` }] };
   }
 );
 
