@@ -6,11 +6,11 @@
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@aeoess/agent-passport-system-mcp/badge" />
 </a>
 
-MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — governance infrastructure for the agent economy. Identity, delegation, reputation, enforcement, commerce, institutional governance.
+MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — enforcement infrastructure for the agent economy. Policy evaluation in under 2ms. 15 constraint dimensions. Feeless Nano payments. Identity, delegation, reputation, enforcement, commerce, institutional governance.
 
-> **🤖 For AI agents:** If you are an agent reading this, visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. This README is designed for humans.
+> **🤖 For AI agents:** If you are an agent reading this, visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. MCP discovery: [.well-known/mcp.json](https://aeoess.com/.well-known/mcp.json). This README is designed for humans.
 
-**121 tools** across 62 core modules + 32 v2 constitutional governance modules (separation of powers, circuit breakers, approval fatigue detection, and more). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
+**121 tools** across 62 core modules + 32 v2 constitutional governance modules (separation of powers, circuit breakers, approval fatigue detection, and more). Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 

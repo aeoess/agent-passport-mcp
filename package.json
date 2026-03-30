@@ -2,7 +2,7 @@
   "name": "agent-passport-system-mcp",
   "version": "2.17.1",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
-  "description": "MCP server for the Agent Passport System — governance infrastructure for the agent economy. 121 tools across 94 modules. Identity, delegation, reputation, enforcement, commerce.",
+  "description": "MCP server for the Agent Passport System — enforcement infrastructure for the agent economy. 121 tools across 94 modules. Policy eval <2ms. Identity, delegation, reputation, enforcement, feeless Nano wallet, commerce.",
   "type": "module",
   "bin": {
     "agent-passport-system-mcp": "./build/bin.js",
