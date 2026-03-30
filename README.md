@@ -208,7 +208,7 @@ Layer 1 — Agent Passport Protocol (Ed25959 identity)
 
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.28.0, 1715 tests)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.29.0, 1843 tests)
 =======
 - npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.26.0, 1532 tests)
 >>>>>>> Stashed changes
