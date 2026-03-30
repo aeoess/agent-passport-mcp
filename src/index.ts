@@ -263,6 +263,9 @@ interface SessionState {
   // Post-issuance behavioral sequence (consilium signal #2)
   postIssuanceBehavior: Map<string, Array<{ tool: string; ts: string }>>;  // agentId → first N tool calls
   recentlyIssuedPassports: Set<string>;                 // agentIds that got passports this session
+  // Consilium signals #3, #5, #9: endorsement latency, issuance timestamps, derived signals
+  issuanceTimestamps: Map<string, number>;              // agentId → Date.now() at issuance
+  endorsementLatencies: Map<string, number>;            // agentId → ms between issuance and first endorsement
 }
 
 // AEOESS Passport Issuer Authority (Certificate Authority model)
@@ -358,6 +361,8 @@ const state: SessionState = {
   issuanceCount: 0,
   postIssuanceBehavior: new Map(),
   recentlyIssuedPassports: new Set(),
+  issuanceTimestamps: new Map(),
+  endorsementLatencies: new Map(),
 };
 
 // Load persisted task state
@@ -826,10 +831,16 @@ server.tool(
       ? countersignPassport(agent.passport, AEOESS_ISSUER_PRIVATE_KEY!, 'aeoess')
       : agent.passport;
 
-    // Phase 4: Derive issuance context
+    // Phase 4: Derive issuance context with computed signals
     const evidence = createEmptyEvidenceRecord(observed);
+    const issuanceAgeMs = Date.now() - ((globalThis as any).__mcpStartTime || Date.now());
+    const derivedSignals = [
+      { key: 'issuance_age_ms', value: String(issuanceAgeMs), derivedFrom: ['serverStartTime', 'requestedAt'], computedAt: new Date().toISOString() },
+      { key: 'session_passport_count', value: String(state.issuanceCount), derivedFrom: ['issuanceCount'], computedAt: new Date().toISOString() },
+    ];
     const context = createIssuanceContext(evidence, {
       hasIssuerSignature: hasIssuer,
+      derivedSignals,
     });
 
     // Phase 5: Bind attestation to passport
@@ -839,6 +850,7 @@ server.tool(
     const passportId = passport.passport.agentId;
     state.issuanceContexts.set(passportId, context);
     state.recentlyIssuedPassports.add(passportId);
+    state.issuanceTimestamps.set(passportId, Date.now());
     // Initialize behavioral sequence tracking for this agent
     state.postIssuanceBehavior.set(passportId, [{ tool: 'issue_passport', ts: new Date().toISOString() }]);
 
@@ -2965,6 +2977,11 @@ server.tool(
   },
   async (args) => {
     recordBehavior('endorse_agent');
+    // Consilium signal #5: endorsement latency. T+200ms = automation. T+3h = human.
+    const issuedAt = state.issuanceTimestamps.get(args.agent_id);
+    if (issuedAt && !state.endorsementLatencies.has(args.agent_id)) {
+      state.endorsementLatencies.set(args.agent_id, Date.now() - issuedAt);
+    }
     if (!state.principal || !state.principalPrivateKey) {
       return { content: [{ type: "text" as const, text: 'No principal identity. Call create_principal first.' }], isError: true };
     }
