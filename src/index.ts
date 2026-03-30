@@ -23,6 +23,7 @@ import {
   // Identity + Crypto
   joinSocialContract, verifySocialContract, generateKeyPair,
   delegate, recordWork, sign,
+  countersignPassport, verifyIssuerSignature, isIssuerVerified,
   // Agent Context (enforcement middleware)
   createAgentContext, AgentContext,
   // Coordination (Layer 6)
@@ -240,6 +241,12 @@ interface SessionState {
   charters: Map<string, CharterCore>;
   approvalRequests: Map<string, ApprovalReq>;
 }
+
+// AEOESS Passport Issuer Authority (Certificate Authority model)
+// Public key is published and hardcoded — anyone can verify.
+// Private key is in AEOESS_ISSUER_PRIVATE_KEY env var (Railway deployment only).
+const AEOESS_ISSUER_PUBLIC_KEY = 'e11f46f5831432d17852189d5df10ed21d5774797ae9ee52dbab8c650fec16ae';
+const AEOESS_ISSUER_PRIVATE_KEY = process.env.AEOESS_ISSUER_PRIVATE_KEY || null;
 
 // Default floor YAML for issue_passport attestation (embedded so it works on remote/sandboxed servers)
 const DEFAULT_FLOOR_YAML = `version: "0.1"
@@ -540,7 +547,7 @@ const server = new McpServer({
 
 const TOOL_PROFILES: Record<string, Set<string>> = {
   identity: new Set([
-    'identify', 'generate_keys', 'issue_passport', 'create_principal', 'endorse_agent',
+    'identify', 'generate_keys', 'issue_passport', 'verify_issuer', 'create_principal', 'endorse_agent',
     'verify_endorsement', 'create_disclosure', 'create_delegation',
     'verify_delegation', 'revoke_delegation', 'sub_delegate',
     'revoke_endorsement', 'get_fleet_status', 'create_v2_delegation',
@@ -607,7 +614,7 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'register_agora_public',
   ]),
   minimal: new Set([
-    'identify', 'generate_keys', 'issue_passport', 'create_delegation', 'verify_delegation',
+    'identify', 'generate_keys', 'issue_passport', 'verify_issuer', 'create_delegation', 'verify_delegation',
     'create_intent', 'evaluate_intent', 'list_profiles',
   ]),
 };
@@ -636,7 +643,7 @@ server.tool(
     const lines = Object.entries(TOOL_PROFILES).map(([name, tools]) =>
       `• ${name} (${tools.size} tools): ${Array.from(tools).slice(0, 6).join(', ')}${tools.size > 6 ? '...' : ''}`
     );
-    return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '120' : profileFilter?.size || '120'} tools)\n\n${lines.join('\n')}\n\n• full (120 tools): All tools exposed (default)` }] };
+    return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '122' : profileFilter?.size || '122'} tools)\n\n${lines.join('\n')}\n\n• full (122 tools): All tools exposed (default)` }] };
   }
 );
 
@@ -743,17 +750,71 @@ server.tool(
       floor: args.attest_to_floor ? (state.floorYaml || DEFAULT_FLOOR_YAML) : undefined,
     });
 
+    // Countersign with AEOESS issuer key if available (CA model)
+    const passport = AEOESS_ISSUER_PRIVATE_KEY
+      ? countersignPassport(agent.passport, AEOESS_ISSUER_PRIVATE_KEY, 'aeoess')
+      : agent.passport;
+
     return {
       content: [{
         type: "text" as const,
         text: JSON.stringify({
-          passport: agent.passport,
-          publicKey: agent.passport.passport.publicKey,
+          passport: passport,
+          publicKey: passport.passport.publicKey,
           privateKey: agent.keyPair.privateKey,
-          agentId: agent.passport.passport.agentId,
+          agentId: passport.passport.agentId,
           attestation: agent.attestation || null,
-          did: `did:aps:${agent.passport.passport.publicKey}`,
-          note: "Store the privateKey securely. Use publicKey and agentId for identification. The passport object is signed and verifiable by anyone.",
+          did: `did:aps:${passport.passport.publicKey}`,
+          issuerVerified: !!passport.issuerSignature,
+          issuerPublicKey: AEOESS_ISSUER_PUBLIC_KEY,
+          note: passport.issuerSignature
+            ? "This passport is countersigned by AEOESS. Verify with issuerPublicKey."
+            : "This passport is self-signed (issuer key not configured on this server).",
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// TOOL: verify_issuer
+// ═══════════════════════════════════════
+
+server.tool(
+  "verify_issuer",
+  "Verify that a passport was officially issued by AEOESS. Checks the issuer countersignature against the published AEOESS public key. Returns false for self-signed passports.",
+  {
+    passport: z.object({
+      passport: z.any(),
+      signature: z.string(),
+      signedAt: z.string(),
+      issuerSignature: z.object({
+        issuerId: z.string(),
+        issuerPublicKey: z.string(),
+        signature: z.string(),
+        signedAt: z.string(),
+      }).optional(),
+    }).describe("The signed passport object to verify"),
+  },
+  async (args) => {
+    const sp = args.passport as any;
+    const hasIssuerSig = isIssuerVerified(sp);
+    const isValid = hasIssuerSig ? verifyIssuerSignature(sp, AEOESS_ISSUER_PUBLIC_KEY) : false;
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          verified: isValid,
+          hasIssuerSignature: hasIssuerSig,
+          issuerId: sp.issuerSignature?.issuerId || null,
+          issuerPublicKey: AEOESS_ISSUER_PUBLIC_KEY,
+          agentId: sp.passport?.agentId || null,
+          note: isValid
+            ? "This passport was officially issued by AEOESS."
+            : hasIssuerSig
+              ? "Passport has an issuer signature but it does NOT match AEOESS. Do not trust."
+              : "This passport is self-signed. It was NOT issued through official AEOESS infrastructure.",
         }, null, 2),
       }],
     };
