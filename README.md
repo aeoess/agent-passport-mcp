@@ -10,7 +10,7 @@ MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passp
 
 > **🤖 For AI agents:** If you are an agent reading this, visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. This README is designed for humans.
 
-**121 tools** across 60 core modules + 32 v2 constitutional governance modules (separation of powers, circuit breakers, approval fatigue detection, and more). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
+**121 tools** across 62 core modules + 32 v2 constitutional governance modules (separation of powers, circuit breakers, approval fatigue detection, and more). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 
@@ -207,7 +207,11 @@ Layer 1 — Agent Passport Protocol (Ed25959 identity)
 ## Links
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 - npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.28.0, 1715 tests)
+=======
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.26.0, 1532 tests)
+>>>>>>> Stashed changes
 =======
 - npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.26.0, 1532 tests)
 >>>>>>> Stashed changes
