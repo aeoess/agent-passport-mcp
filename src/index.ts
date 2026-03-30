@@ -260,6 +260,9 @@ interface SessionState {
   issuanceContexts: Map<string, IssuanceContext>;      // passportId → full issuance record
   issuanceChallenges: Map<string, IssuanceChallengeType>; // challengeId → pending challenge
   issuanceCount: number;                                // velocity counter for Tier 0
+  // Post-issuance behavioral sequence (consilium signal #2)
+  postIssuanceBehavior: Map<string, Array<{ tool: string; ts: string }>>;  // agentId → first N tool calls
+  recentlyIssuedPassports: Set<string>;                 // agentIds that got passports this session
 }
 
 // AEOESS Passport Issuer Authority (Certificate Authority model)
@@ -353,9 +356,27 @@ const state: SessionState = {
   issuanceContexts: new Map(),
   issuanceChallenges: new Map(),
   issuanceCount: 0,
+  postIssuanceBehavior: new Map(),
+  recentlyIssuedPassports: new Set(),
 };
 
 // Load persisted task state
+// ── Post-issuance behavioral sequence recording ──
+// Consilium signal #2: first 10 tool calls after passport issuance.
+// Real agents do work. Farming agents extract. Server-recorded, can't retroactively change.
+const MAX_BEHAVIORAL_SEQUENCE = 10;
+
+function recordBehavior(toolName: string): void {
+  // Record for all recently-issued passport holders in this session
+  for (const agentId of state.recentlyIssuedPassports) {
+    const seq = state.postIssuanceBehavior.get(agentId) || [];
+    if (seq.length < MAX_BEHAVIORAL_SEQUENCE) {
+      seq.push({ tool: toolName, ts: new Date().toISOString() });
+      state.postIssuanceBehavior.set(agentId, seq);
+    }
+  }
+}
+
 function loadTasks(): void {
   if (existsSync(STORE_PATH)) {
     try {
@@ -689,6 +710,7 @@ server.tool(
     agent_id: z.string().optional().describe("Your agent ID"),
   },
   async (args) => {
+    recordBehavior('identify');
     state.agentKey = args.public_key;
     state.privateKey = args.private_key;
     state.agentId = args.agent_id || null;
@@ -816,6 +838,9 @@ server.tool(
     // Store the issuance context (server-side memory)
     const passportId = passport.passport.agentId;
     state.issuanceContexts.set(passportId, context);
+    state.recentlyIssuedPassports.add(passportId);
+    // Initialize behavioral sequence tracking for this agent
+    state.postIssuanceBehavior.set(passportId, [{ tool: 'issue_passport', ts: new Date().toISOString() }]);
 
     // Bridge: fire-and-forget POST to gateway (if configured)
     // When Mini adds POST /issuance-dossier, this data starts flowing automatically.
@@ -993,6 +1018,59 @@ server.tool(
             grade2: records.filter(r => r.grade === 2).length,
             grade3: records.filter(r => r.grade === 3).length,
           },
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// TOOL: get_behavioral_sequence
+// ═══════════════════════════════════════
+
+server.tool(
+  "get_behavioral_sequence",
+  "Get the post-issuance behavioral sequence for an agent. Shows the first 10 tool calls after passport issuance. Real agents do work. Farming agents extract. This is consilium signal #2.",
+  {
+    agent_id: z.string().describe("The agent ID to query"),
+  },
+  async (args) => {
+    const sequence = state.postIssuanceBehavior.get(args.agent_id);
+    if (!sequence || sequence.length === 0) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            agent_id: args.agent_id,
+            found: false,
+            note: "No behavioral sequence recorded. Agent may have been issued before tracking was enabled.",
+          }, null, 2),
+        }],
+      };
+    }
+
+    // Classify the behavioral pattern
+    const toolNames = sequence.map(s => s.tool);
+    const hasWork = toolNames.some(t => ['submit_evidence', 'publish_intent_card', 'create_agora_message', 'submit_deliverable'].includes(t));
+    const hasExtraction = toolNames.some(t => ['commerce_preflight', 'create_checkout'].includes(t));
+    const pattern = hasWork ? 'productive' : hasExtraction ? 'extractive' : 'neutral';
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          agent_id: args.agent_id,
+          found: true,
+          sequence_length: sequence.length,
+          max_tracked: MAX_BEHAVIORAL_SEQUENCE,
+          pattern,
+          tools_called: toolNames,
+          sequence,
+          note: pattern === 'extractive'
+            ? "Agent's first actions after passport were value extraction (commerce). Farming signal."
+            : pattern === 'productive'
+              ? "Agent's first actions after passport were productive work. Healthy pattern."
+              : "Neutral pattern — identity/delegation setup.",
         }, null, 2),
       }],
     };
@@ -1498,6 +1576,7 @@ server.tool(
     methodology: z.string().describe("How you gathered this evidence"),
   },
   async (args) => {
+    recordBehavior('submit_evidence');
     const keyErr = requireKey();
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
@@ -1758,6 +1837,7 @@ server.tool(
     expires_in_hours: z.number().default(24).describe("Delegation validity in hours"),
   },
   async (args) => {
+    recordBehavior('create_delegation');
     const keyErr = requireKey();
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
@@ -1840,6 +1920,7 @@ server.tool(
     cascade: z.boolean().default(true).describe("Also revoke all sub-delegations"),
   },
   async (args) => {
+    recordBehavior('revoke_delegation');
     const keyErr = requireKey();
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
@@ -2525,6 +2606,7 @@ server.tool(
     agent_id: z.string().describe("Agent making the purchase"),
   },
   async (args) => {
+    recordBehavior('commerce_preflight');
     const keyErr = requireKey();
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
@@ -2882,6 +2964,7 @@ server.tool(
     expires_in_days: z.number().default(365).describe("Days until endorsement expires"),
   },
   async (args) => {
+    recordBehavior('endorse_agent');
     if (!state.principal || !state.principalPrivateKey) {
       return { content: [{ type: "text" as const, text: 'No principal identity. Call create_principal first.' }], isError: true };
     }
@@ -3595,6 +3678,7 @@ server.tool(
     ttl_hours: z.number().default(24).describe("Hours until card expires"),
   },
   async (args) => {
+    recordBehavior('publish_intent_card');
     const keyErr = requireKey();
     if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
