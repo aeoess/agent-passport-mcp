@@ -817,6 +817,30 @@ server.tool(
     const passportId = passport.passport.agentId;
     state.issuanceContexts.set(passportId, context);
 
+    // Bridge: fire-and-forget POST to gateway (if configured)
+    // When Mini adds POST /issuance-dossier, this data starts flowing automatically.
+    const gwUrl = process.env.AEOESS_GATEWAY_URL  // e.g. https://gateway.aeoess.com
+    const gwKey = process.env.AEOESS_GATEWAY_KEY   // e.g. aps_live_...
+    if (gwUrl && gwKey) {
+      fetch(`${gwUrl}/api/v1/issuance-dossier`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${gwKey}` },
+        body: JSON.stringify({
+          passport_id: passportId,
+          public_key_hash: sha256(attestedPassport.passport.publicKey),
+          passport_grade: context.assessment.passportGrade,
+          flags: context.assessment.flags,
+          attestation_bundle_hash: context.assessment.attestationBundleHash,
+          observed_context: context.evidence.observed,
+          runtime_attestations: context.evidence.runtimeAttestations,
+          provider_attestations: context.evidence.providerAttestations,
+          self_declared_signals: context.evidence.selfDeclaredSignals,
+          derived_signals: context.assessment.derivedSignals || [],
+          prior_passport_ref: context.evidence.priorPassportRef || null,
+        }),
+      }).catch(() => {}) // fire-and-forget: never block passport issuance
+    }
+
     return {
       content: [{
         type: "text" as const,
