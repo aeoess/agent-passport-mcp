@@ -2,7 +2,7 @@
   "name": "agent-passport-system-mcp",
   "version": "2.17.0",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
-  "description": "MCP server for the Agent Passport System \u2014 governance infrastructure for the agent economy. 121 tools across 86 modules. Identity, delegation, reputation, enforcement, commerce.",
+  "description": "MCP server for the Agent Passport System — governance infrastructure for the agent economy. 121 tools across 89 modules. Identity, delegation, reputation, enforcement, commerce.",
   "type": "module",
   "bin": {
     "agent-passport-system-mcp": "./build/bin.js",
@@ -18,7 +18,7 @@
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepublishOnly": "npm run build",
-    "postinstall": "echo '\\n\ud83d\udd11 Agent Passport MCP installed! Run: npx agent-passport-system-mcp setup\\n   Or for zero-install remote: npx agent-passport-system-mcp setup --remote\\n'",
+    "postinstall": "echo '\\n🔑 Agent Passport MCP installed! Run: npx agent-passport-system-mcp setup\\n   Or for zero-install remote: npx agent-passport-system-mcp setup --remote\\n'",
     "postpublish": "cd ~/aeoess_web && node scripts/propagate.mjs --apply --commit 2>/dev/null || echo 'Propagation skipped (aeoess_web not found)'"
   },
   "keywords": [
