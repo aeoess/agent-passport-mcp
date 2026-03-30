@@ -97,6 +97,22 @@ import {
   clearV2AttestationStore,
 } from "agent-passport-system";
 
+// Agent Attestation Architecture (Phase 1 — Consilium Build)
+import {
+  createIssuanceChallenge, verifyRuntimeAttestation,
+  computePassportGrade, computeAttestationFlags, computeAttestationBundleHash,
+  createIssuanceContext, bindAttestation,
+  createWorkspaceManifest, createEmptyEvidenceRecord,
+  isChallengeFresh, isGradeAtLeast,
+  PASSPORT_GRADE_LABELS,
+} from "agent-passport-system";
+
+import type {
+  IssuanceContext, IssuanceChallenge as IssuanceChallengeType,
+  PassportGrade, ObservedContext, RuntimeAttestation as RuntimeAttestationType,
+  PassportAttestationSummary,
+} from "agent-passport-system";
+
 import type {
   CoordinationEventType,
   PolicyContext, V2Delegation, OutcomeRecord,
@@ -240,6 +256,10 @@ interface SessionState {
   // Rome-Complete: Charter & Institutional Governance
   charters: Map<string, CharterCore>;
   approvalRequests: Map<string, ApprovalReq>;
+  // Agent Attestation Architecture (Phase 1)
+  issuanceContexts: Map<string, IssuanceContext>;      // passportId → full issuance record
+  issuanceChallenges: Map<string, IssuanceChallengeType>; // challengeId → pending challenge
+  issuanceCount: number;                                // velocity counter for Tier 0
 }
 
 // AEOESS Passport Issuer Authority (Certificate Authority model)
@@ -329,6 +349,10 @@ const state: SessionState = {
   sessionAgent: null,
   charters: new Map(),
   approvalRequests: new Map(),
+  // Agent Attestation Architecture (Phase 1)
+  issuanceContexts: new Map(),
+  issuanceChallenges: new Map(),
+  issuanceCount: 0,
 };
 
 // Load persisted task state
@@ -538,6 +562,9 @@ const server = new McpServer({
   version: "2.0.0",
 });
 
+// Track server start time for Tier 0 connection timing
+(globalThis as any).__mcpStartTime = Date.now();
+
 // ═══════════════════════════════════════
 // Tool Profiles — expose only relevant tools
 // ═══════════════════════════════════════
@@ -547,7 +574,8 @@ const server = new McpServer({
 
 const TOOL_PROFILES: Record<string, Set<string>> = {
   identity: new Set([
-    'identify', 'generate_keys', 'issue_passport', 'verify_issuer', 'create_principal', 'endorse_agent',
+    'identify', 'generate_keys', 'issue_passport', 'verify_issuer', 'get_passport_grade', 'list_issuance_records',
+    'create_principal', 'endorse_agent',
     'verify_endorsement', 'create_disclosure', 'create_delegation',
     'verify_delegation', 'revoke_delegation', 'sub_delegate',
     'revoke_endorsement', 'get_fleet_status', 'create_v2_delegation',
@@ -614,7 +642,8 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'register_agora_public',
   ]),
   minimal: new Set([
-    'identify', 'generate_keys', 'issue_passport', 'verify_issuer', 'create_delegation', 'verify_delegation',
+    'identify', 'generate_keys', 'issue_passport', 'verify_issuer', 'get_passport_grade', 'list_issuance_records',
+    'create_delegation', 'verify_delegation',
     'create_intent', 'evaluate_intent', 'list_profiles',
   ]),
 };
@@ -731,7 +760,7 @@ server.tool(
 
 server.tool(
   "issue_passport",
-  "Issue a complete agent passport with keys, signed passport, and optional values floor attestation in a single call. Use this to onboard any agent — no npm install required.",
+  "Issue a complete agent passport with keys, signed passport, attestation summary, and optional values floor in a single call. The server silently captures Tier 0 observed signals and computes a passport grade (0-3). Use this to onboard any agent — no npm install required.",
   {
     name: z.string().describe("Agent name (human-readable)"),
     owner: z.string().describe("Owner/principal identifier"),
@@ -740,6 +769,25 @@ server.tool(
     attest_to_floor: z.boolean().optional().describe("If true, attests to the default values floor (F-001 through F-008)"),
   },
   async (args) => {
+    const issuanceStart = Date.now();
+
+    // Phase 0: Silent Observation — capture Tier 0 signals before processing
+    state.issuanceCount++;
+    const { createHash } = await import('crypto');
+    const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+
+    const observed: Partial<ObservedContext> = {
+      transportType: process.env.MCP_TRANSPORT || 'stdio',
+      issuanceVelocity: state.issuanceCount,
+      requestPayloadFingerprint: sha256(JSON.stringify({
+        name: args.name, owner: args.owner,
+        mission: args.mission, capabilities: args.capabilities,
+      })),
+      mcpClientId: state.agentId || undefined,
+      connectionTimingMs: issuanceStart - (globalThis as any).__mcpStartTime || 0,
+    };
+
+    // Create the passport (same as before)
     const agent = joinSocialContract({
       name: args.name,
       mission: args.mission || 'General purpose agent',
@@ -751,25 +799,42 @@ server.tool(
     });
 
     // Countersign with AEOESS issuer key if available (CA model)
-    const passport = AEOESS_ISSUER_PRIVATE_KEY
-      ? countersignPassport(agent.passport, AEOESS_ISSUER_PRIVATE_KEY, 'aeoess')
+    const hasIssuer = !!AEOESS_ISSUER_PRIVATE_KEY;
+    const passport = hasIssuer
+      ? countersignPassport(agent.passport, AEOESS_ISSUER_PRIVATE_KEY!, 'aeoess')
       : agent.passport;
+
+    // Phase 4: Derive issuance context
+    const evidence = createEmptyEvidenceRecord(observed);
+    const context = createIssuanceContext(evidence, {
+      hasIssuerSignature: hasIssuer,
+    });
+
+    // Phase 5: Bind attestation to passport
+    const attestedPassport = bindAttestation(passport, context);
+
+    // Store the issuance context (server-side memory)
+    const passportId = passport.passport.agentId;
+    state.issuanceContexts.set(passportId, context);
 
     return {
       content: [{
         type: "text" as const,
         text: JSON.stringify({
-          passport: passport,
-          publicKey: passport.passport.publicKey,
+          passport: attestedPassport,
+          publicKey: attestedPassport.passport.publicKey,
           privateKey: agent.keyPair.privateKey,
-          agentId: passport.passport.agentId,
+          agentId: attestedPassport.passport.agentId,
           attestation: agent.attestation || null,
-          did: `did:aps:${passport.passport.publicKey}`,
-          issuerVerified: !!passport.issuerSignature,
+          passportAttestation: attestedPassport.attestation,
+          passportGrade: context.assessment.passportGrade,
+          passportGradeLabel: PASSPORT_GRADE_LABELS[context.assessment.passportGrade],
+          did: `did:aps:${attestedPassport.passport.publicKey}`,
+          issuerVerified: !!attestedPassport.issuerSignature,
           issuerPublicKey: AEOESS_ISSUER_PUBLIC_KEY,
-          note: passport.issuerSignature
-            ? "This passport is countersigned by AEOESS. Verify with issuerPublicKey."
-            : "This passport is self-signed (issuer key not configured on this server).",
+          note: attestedPassport.issuerSignature
+            ? `Grade ${context.assessment.passportGrade} passport (${PASSPORT_GRADE_LABELS[context.assessment.passportGrade]}). Countersigned by AEOESS.`
+            : `Grade ${context.assessment.passportGrade} passport (${PASSPORT_GRADE_LABELS[context.assessment.passportGrade]}). Self-signed (issuer key not configured).`,
         }, null, 2),
       }],
     };
@@ -815,6 +880,95 @@ server.tool(
             : hasIssuerSig
               ? "Passport has an issuer signature but it does NOT match AEOESS. Do not trust."
               : "This passport is self-signed. It was NOT issued through official AEOESS infrastructure.",
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// TOOL: get_passport_grade
+// ═══════════════════════════════════════
+
+server.tool(
+  "get_passport_grade",
+  "Query the attestation grade and issuance context for a passport. Returns the passport grade (0-3), flags, and evidence summary. Grade 0 = self-signed, 1 = issuer countersigned, 2 = runtime-bound, 3 = principal-bound. This is the partner-facing trust query.",
+  {
+    agent_id: z.string().describe("The agent ID of the passport to query"),
+  },
+  async (args) => {
+    const context = state.issuanceContexts.get(args.agent_id);
+    if (!context) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            found: false,
+            agent_id: args.agent_id,
+            note: "No issuance record found for this agent. The passport may have been issued before attestation tracking was enabled, or on a different server instance.",
+          }, null, 2),
+        }],
+      };
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          found: true,
+          agent_id: args.agent_id,
+          passportGrade: context.assessment.passportGrade,
+          passportGradeLabel: PASSPORT_GRADE_LABELS[context.assessment.passportGrade],
+          flags: context.assessment.flags,
+          attestationBundleHash: context.assessment.attestationBundleHash,
+          assessedAt: context.assessment.assessedAt,
+          evidenceSummary: {
+            hasRuntimeAttestation: context.evidence.runtimeAttestations.length > 0,
+            hasProviderAttestation: context.evidence.providerAttestations.length > 0,
+            selfDeclaredSignalCount: context.evidence.selfDeclaredSignals.length,
+            hasPriorPassport: !!context.evidence.priorPassportRef,
+            hasContinuityProof: !!context.evidence.priorContinuityProof,
+            observedTransport: context.evidence.observed.transportType || null,
+            issuanceVelocity: context.evidence.observed.issuanceVelocity || null,
+          },
+          derivedSignals: context.assessment.derivedSignals || [],
+          gradeHistory: context.assessment.gradeHistory || [],
+        }, null, 2),
+      }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════
+// TOOL: list_issuance_records
+// ═══════════════════════════════════════
+
+server.tool(
+  "list_issuance_records",
+  "List all stored issuance records with their passport grades. Shows how many passports have been issued in this session and their trust posture. Useful for monitoring issuance patterns.",
+  {},
+  async () => {
+    const records = Array.from(state.issuanceContexts.entries()).map(([agentId, ctx]) => ({
+      agentId,
+      grade: ctx.assessment.passportGrade,
+      gradeLabel: PASSPORT_GRADE_LABELS[ctx.assessment.passportGrade],
+      flags: ctx.assessment.flags,
+      issuedAt: ctx.evidence.requestedAt,
+    }));
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          totalIssued: records.length,
+          sessionVelocity: state.issuanceCount,
+          records,
+          gradeDistribution: {
+            grade0: records.filter(r => r.grade === 0).length,
+            grade1: records.filter(r => r.grade === 1).length,
+            grade2: records.filter(r => r.grade === 2).length,
+            grade3: records.filter(r => r.grade === 3).length,
+          },
         }, null, 2),
       }],
     };
