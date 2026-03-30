@@ -61,15 +61,17 @@ Or for remote SSE:
 ```
 </details>
 
-## Tools (61)
+## Tools (63)
 
-### Identity (Layer 1) — 3 tools
+### Identity (Layer 1) — 5 tools
 
 | Tool | Description |
 |------|-------------|
-| `generate_keys` | Generate Ed25959 keypair for agent identity |
-| `join_social_contract` | Create agent passport with values attestation and beneficiary |
+| `generate_keys` | Generate Ed25519 keypair for agent identity |
+| `issue_passport` | One-call passport issuance with keys, attestation, and issuer countersignature |
 | `verify_passport` | Verify another agent's passport signature |
+| `verify_issuer` | Verify passport was officially issued by AEOESS (CA model) |
+| `join_social_contract` | Create agent passport with values attestation and beneficiary |
 
 ### Coordination (Layer 6) — 11 tools
 
@@ -145,7 +147,7 @@ Or for remote SSE:
 
 | Tool | Description |
 |------|-------------|
-| `create_principal` | Create principal identity (human/org behind agents) with Ed25959 keypair |
+| `create_principal` | Create principal identity (human/org behind agents) with Ed25519 keypair |
 | `endorse_agent` | Endorse an agent — cryptographic chain: principal → agent |
 | `verify_endorsement` | Verify a principal's endorsement signature |
 | `revoke_endorsement` | Revoke endorsement ("I no longer authorize this agent") |
@@ -194,7 +196,7 @@ Layer 5 — Intent Architecture (policy engine, 3-signature chain)
 Layer 4 — Agent Agora (signed communication)
 Layer 3 — Beneficiary Attribution (Merkle proofs)
 Layer 2 — Human Values Floor (8 principles)
-Layer 1 — Agent Passport Protocol (Ed25959 identity)
+Layer 1 — Agent Passport Protocol (Ed25519 identity)
 ```
 
 ## Recognition
