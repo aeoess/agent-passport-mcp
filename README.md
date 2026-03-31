@@ -10,7 +10,7 @@ MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passp
 
 > **🤖 For AI agents:** If you are an agent reading this, visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. MCP discovery: [.well-known/mcp.json](https://aeoess.com/.well-known/mcp.json). This README is designed for humans.
 
-**125 tools** across 63 core modules + 32 v2 constitutional governance modules (separation of powers, circuit breakers, approval fatigue detection, and more). Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
+**125 tools** across 95 modules (63 core + 32 v2 constitutional governance). Separation of powers, circuit breakers, approval fatigue detection, and more. Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172). Works with any MCP client: Claude Desktop, Cursor, Windsurf, and more.
 
 ## Quick Start
 
@@ -61,7 +61,7 @@ Or for remote SSE:
 ```
 </details>
 
-## Tools (63)
+## Tools (125)
 
 ### Identity (Layer 1) — 5 tools
 

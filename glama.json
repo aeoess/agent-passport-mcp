@@ -2,7 +2,7 @@
   "$schema": "https://glama.ai/mcp/schemas/server.json",
   "name": "agent-passport-system-mcp",
   "display_name": "Agent Passport System MCP",
-  "description": "Cryptographic identity, trust, delegation, governance, and commerce protocol for AI agents. 83 MCP tools across 42 protocol modules. Ed25519 signed, open source.",
+  "description": "Cryptographic identity, trust, delegation, governance, and commerce protocol for AI agents. 125 MCP tools across 95 protocol modules. Ed25519 signed, open source.",
   "maintainers": ["aeoess"],
   "repository": "https://github.com/aeoess/agent-passport-mcp",
   "homepage": "https://aeoess.com/passport",
@@ -12,7 +12,7 @@
   "relatedServers": [
     "aeoess/mingle-mcp"
   ],
-  "tools_count": 83,
+  "tools_count": 125,
   "install": {
     "npm": "agent-passport-system-mcp"
   },
