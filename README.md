@@ -1,5 +1,7 @@
 # Agent Passport System MCP Server
 
+[![SafeSkill 78/100](https://img.shields.io/badge/SafeSkill-78%2F100_Passes%20with%20Notes-yellow)](https://safeskill.dev/scan/aeoess-agent-passport-mcp)
+
 <!-- mcp-name: io.github.aeoess/agent-passport-mcp -->
 
 <a href="https://glama.ai/mcp/servers/@aeoess/agent-passport-system-mcp">
