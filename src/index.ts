@@ -105,6 +105,10 @@ import {
   createWorkspaceManifest, createEmptyEvidenceRecord,
   isChallengeFresh, isGradeAtLeast,
   PASSPORT_GRADE_LABELS,
+  // v1.33.0 — action_ref + freshness + evidence-based grade
+  computeActionRef, actionRefsMatch,
+  isEvidenceFresh, computeEvidenceAge,
+  classifyEvidenceQuality, evidenceQualityToGrade,
 } from "agent-passport-system";
 
 import type {
@@ -5396,6 +5400,72 @@ server.tool(
     };
     const result = applyReputationDowngrade(rep, policy);
     return { content: [{ type: "text", text: `🌐 Reputation Downgrade\n\nAccepted: ${result.accepted}\nOriginal tier: ${args.attested_tier} → Effective: ${result.effectiveTier}\nOriginal diversity: ${args.attested_diversity_score} → Effective: ${result.effectiveDiversity.toFixed(2)}\nDowngrade ratio: ${args.downgrade_ratio}` }] };
+  }
+);
+
+// ═══════════════════════════════════════
+// v1.33.0 — action_ref + freshness + evidence-based grade
+// ═══════════════════════════════════════
+
+server.tool(
+  "compute_action_ref",
+  "Compute content-addressed request identity (SHA-256 of agentId + actionType + scope + normalized timestamp). Two receipts with the same action_ref describe the same request.",
+  {
+    agent_id: z.string(),
+    action_type: z.string(),
+    scope_required: z.array(z.string()),
+    timestamp: z.string().optional().describe("ISO 8601 timestamp; defaults to now"),
+  },
+  async (args) => {
+    const intent = {
+      agentId: args.agent_id,
+      action: { type: args.action_type, scopeRequired: args.scope_required },
+      createdAt: args.timestamp ?? new Date().toISOString(),
+    } as any;
+    const ref = computeActionRef(intent);
+    return { content: [{ type: "text", text: `🔗 action_ref: ${ref}\n\nAgent: ${args.agent_id}\nType: ${args.action_type}\nScope: ${args.scope_required.join(', ')}\nTimestamp: ${intent.createdAt}` }] };
+  }
+);
+
+server.tool(
+  "is_evidence_fresh",
+  "Check whether typed attestation evidence is still fresh. rotating: ttl required; snapshot: maxAge optional; static: always fresh.",
+  {
+    type: z.enum(['rotating', 'snapshot', 'static']),
+    valid_at: z.string().describe("ISO 8601 timestamp evidence was produced"),
+    ttl: z.number().optional().describe("Seconds (required for rotating)"),
+    max_age: z.number().optional().describe("Seconds (optional for snapshot)"),
+    now: z.string().optional().describe("ISO 8601 override for current time"),
+  },
+  async (args) => {
+    const freshness: any = { type: args.type, validAt: args.valid_at };
+    if (args.ttl !== undefined) freshness.ttl = args.ttl;
+    if (args.max_age !== undefined) freshness.maxAge = args.max_age;
+    const nowDate = args.now ? new Date(args.now) : undefined;
+    const fresh = isEvidenceFresh(freshness, nowDate);
+    const ageSec = computeEvidenceAge(freshness, nowDate);
+    return { content: [{ type: "text", text: `${fresh ? '✅' : '❌'} Evidence fresh: ${fresh}\n\nType: ${args.type}\nValid at: ${args.valid_at}\nAge: ${ageSec}s${args.ttl !== undefined ? `\nTTL: ${args.ttl}s` : ''}${args.max_age !== undefined ? `\nMax age: ${args.max_age}s` : ''}` }] };
+  }
+);
+
+server.tool(
+  "classify_evidence_quality",
+  "Classify attestation evidence quality (none / issuer_vouched / infrastructure / principal_bound) and return the corresponding grade (0-3).",
+  {
+    method: z.string().optional().describe("Attestation method (e.g. 'spiffe')"),
+    has_issuer_signature: z.boolean().optional(),
+    has_principal_binding: z.boolean().optional(),
+    evidence: z.record(z.any()).optional().describe("Evidence object (checked for known infrastructure keys)"),
+  },
+  async (args) => {
+    const quality = classifyEvidenceQuality({
+      method: args.method,
+      hasIssuerSignature: args.has_issuer_signature,
+      hasPrincipalBinding: args.has_principal_binding,
+      evidence: args.evidence,
+    });
+    const grade = evidenceQualityToGrade(quality);
+    return { content: [{ type: "text", text: `🎖️ Evidence Quality: ${quality}\nGrade: ${grade}\n\nInputs:\n  method: ${args.method ?? 'none'}\n  issuerSignature: ${args.has_issuer_signature ?? false}\n  principalBinding: ${args.has_principal_binding ?? false}\n  evidence keys: ${args.evidence ? Object.keys(args.evidence).join(', ') || '(empty)' : '(none)'}` }] };
   }
 );
 
