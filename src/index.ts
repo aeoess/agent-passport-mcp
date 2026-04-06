@@ -109,6 +109,9 @@ import {
   computeActionRef, actionRefsMatch,
   isEvidenceFresh, computeEvidenceAge,
   classifyEvidenceQuality, evidenceQualityToGrade,
+  // key rotation
+  createDIDDocument, announceKeyRotation, activateKeyRotation,
+  verifyRotationChain, isKeyActive, rotateAndInvalidate,
 } from "agent-passport-system";
 
 import type {
@@ -5466,6 +5469,76 @@ server.tool(
     });
     const grade = evidenceQualityToGrade(quality);
     return { content: [{ type: "text", text: `🎖️ Evidence Quality: ${quality}\nGrade: ${grade}\n\nInputs:\n  method: ${args.method ?? 'none'}\n  issuerSignature: ${args.has_issuer_signature ?? false}\n  principalBinding: ${args.has_principal_binding ?? false}\n  evidence keys: ${args.evidence ? Object.keys(args.evidence).join(', ') || '(empty)' : '(none)'}` }] };
+  }
+);
+
+// ═══════════════════════════════════════
+// Key Rotation — DID Document + Identity Continuity
+// ═══════════════════════════════════════
+
+server.tool(
+  "rotate_key",
+  "Rotate an agent's Ed25519 key. Planned mode: configurable overlap (default 24h). Emergency mode: immediate old-key retirement. Returns updated DID document, rotation state, and revocation results.",
+  {
+    mode: z.enum(['planned', 'emergency']),
+    old_private_key: z.string().describe("Hex-encoded private key being rotated FROM"),
+    agent_name: z.string().optional().describe("Agent name for the passport (default: current session)"),
+    activation_delay_hours: z.number().optional().describe("Planned mode overlap hours (default: 24)"),
+    delegation_ids_to_revoke: z.array(z.string()).optional().describe("Delegation IDs to cascade-revoke during rotation"),
+  },
+  async (args) => {
+    const { generateKeyPair } = await import("agent-passport-system");
+    const oldPublicKey = (await import("agent-passport-system")).publicKeyFromPrivate(args.old_private_key);
+    const newKeyPair = generateKeyPair();
+    const passport = {
+      version: '1.0', agentId: `agent-${oldPublicKey.slice(0, 8)}`, agentName: args.agent_name || 'MCP Agent',
+      ownerAlias: 'mcp', publicKey: oldPublicKey, mission: 'key rotation', capabilities: ['rotate'],
+      runtime: { platform: 'mcp', models: ['claude'], toolsCount: 128, memoryType: 'session' },
+      createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      voteWeight: 1, reputation: { overall: 0, collaborationsCompleted: 0, proposalsSubmitted: 0, proposalsApproved: 0, tokensContributed: 0, tasksCompleted: 0, lastUpdated: new Date().toISOString() },
+      delegations: [], metadata: {},
+    } as any;
+    const doc = createDIDDocument(passport);
+    const delayMs = args.activation_delay_hours != null ? args.activation_delay_hours * 3600000 : undefined;
+    const result = rotateAndInvalidate(
+      doc, args.old_private_key, newKeyPair,
+      args.delegation_ids_to_revoke || [],
+      { mode: args.mode, activationDelayMs: delayMs },
+    );
+    return { content: [{ type: "text", text: `🔑 Key Rotation (${args.mode})\n\nState: ${result.rotationState}\nOld key: ${oldPublicKey.slice(0, 16)}...\nNew key: ${newKeyPair.publicKey.slice(0, 16)}...\nNew private key: ${newKeyPair.privateKey}\nDID: ${result.didDocument.id}\nRotation log entries: ${result.didDocument.rotationLog.length}\nRevocations: ${result.revocationResults.length} (${result.revocationResults.filter(r => !r.error).length} succeeded)\n\nActivation time: ${result.didDocument.pendingRotation?.activationTime || 'immediate'}` }] };
+  }
+);
+
+server.tool(
+  "verify_rotation_chain",
+  "Verify all rotation signatures in a DID document's rotation log. Returns true if the full chain is cryptographically valid.",
+  {
+    did_document: z.any().describe("RotatableDIDDocument JSON object with rotationLog"),
+  },
+  async (args) => {
+    const doc = args.did_document;
+    if (!doc || !Array.isArray(doc.rotationLog)) {
+      return { content: [{ type: "text", text: `❌ Invalid DID document: missing rotationLog array` }] };
+    }
+    const valid = verifyRotationChain(doc);
+    return { content: [{ type: "text", text: `${valid ? '✅' : '❌'} Rotation chain valid: ${valid}\n\nEntries verified: ${doc.rotationLog.length}\nDID: ${doc.id || 'unknown'}` }] };
+  }
+);
+
+server.tool(
+  "is_key_active",
+  "Check if a public key is currently authorized for active operations in a DID document. SDK convenience check; gateway enforcement is authoritative.",
+  {
+    did_document: z.any().describe("RotatableDIDDocument JSON object"),
+    public_key: z.string().describe("Hex-encoded Ed25519 public key to check"),
+  },
+  async (args) => {
+    const doc = args.did_document;
+    if (!doc || !Array.isArray(doc.verificationMethod)) {
+      return { content: [{ type: "text", text: `❌ Invalid DID document: missing verificationMethod` }] };
+    }
+    const active = isKeyActive(doc, args.public_key);
+    return { content: [{ type: "text", text: `${active ? '✅ Active' : '🔒 Inactive/Retired'}\n\nKey: ${args.public_key.slice(0, 16)}...\nDID: ${doc.id || 'unknown'}\nVerification methods: ${doc.verificationMethod.length}\nRotation log entries: ${(doc.rotationLog || []).length}` }] };
   }
 );
 
