@@ -1,8 +1,8 @@
 {
   "name": "agent-passport-system-mcp",
-  "version": "2.20.0",
+  "version": "2.21.0",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
-  "description": "MCP server for the Agent Passport System — enforcement infrastructure for the agent economy. 131 tools across 103 modules. Policy eval <2ms. Identity, delegation, reputation, enforcement, attestation, feeless Nano wallet, commerce.",
+  "description": "MCP server for the Agent Passport System \u2014 enforcement infrastructure for the agent economy. 131 tools across 103 modules. Policy eval <2ms. Identity, delegation, reputation, enforcement, attestation, feeless Nano wallet, commerce.",
   "type": "module",
   "bin": {
     "agent-passport-system-mcp": "./build/bin.js",
@@ -14,11 +14,11 @@
     "CODE_OF_CONDUCT.md"
   ],
   "scripts": {
-    "build": "tsc && chmod 755 build/bin.js build/index.js build/setup.js",
+    "build": "npx tsc && chmod 755 build/bin.js build/index.js build/setup.js",
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepublishOnly": "npm run build",
-    "postinstall": "echo '\\n🔑 Agent Passport MCP installed! Run: npx agent-passport-system-mcp setup\\n   Or for zero-install remote: npx agent-passport-system-mcp setup --remote\\n'",
+    "postinstall": "echo '\\n\ud83d\udd11 Agent Passport MCP installed! Run: npx agent-passport-system-mcp setup\\n   Or for zero-install remote: npx agent-passport-system-mcp setup --remote\\n'",
     "postpublish": "cd ~/aeoess_web && node scripts/propagate.mjs --apply --commit 2>/dev/null || echo 'Propagation skipped (aeoess_web not found)'"
   },
   "keywords": [
@@ -49,11 +49,11 @@
   "homepage": "https://github.com/aeoess/agent-passport-mcp",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "agent-passport-system": "^1.33.0",
+    "agent-passport-system": "^1.34.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@types/node": "^22.19.15",
+    "@types/node": "^22.19.17",
     "typescript": "^5.9.3"
   }
 }
