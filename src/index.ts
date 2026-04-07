@@ -598,6 +598,8 @@ const server = new McpServer({
 // Track server start time for Tier 0 connection timing
 (globalThis as any).__mcpStartTime = Date.now();
 
+// (try/catch wrapper merged into profile filter below)
+
 // ═══════════════════════════════════════
 // Tool Profiles — expose only relevant tools
 // ═══════════════════════════════════════
@@ -684,13 +686,25 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
 const activeProfile = (process.env.APS_PROFILE || 'full').toLowerCase();
 const profileFilter = TOOL_PROFILES[activeProfile];
 
-// Wrap server.tool to respect profile filtering
+// Wrap server.tool: profile filtering + try/catch on all handlers
 const _origTool: any = server.tool.bind(server);
 (server as any).tool = function(name: string, ...rest: any[]) {
-  if (name === 'list_profiles') return _origTool(name, ...rest);
-  if (activeProfile === 'full' || !profileFilter || profileFilter.has(name)) {
-    return _origTool(name, ...rest);
+  if (name !== 'list_profiles' && activeProfile !== 'full' && profileFilter && !profileFilter.has(name)) {
+    return; // filtered out by profile
   }
+  // Wrap the handler (last arg) with try/catch to prevent crashes
+  const handlerIdx = rest.length - 1;
+  const origHandler = rest[handlerIdx];
+  if (typeof origHandler === 'function') {
+    rest[handlerIdx] = async (...args: any[]) => {
+      try {
+        return await origHandler(...args);
+      } catch (e: any) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: e.message || String(e) }) }], isError: true };
+      }
+    };
+  }
+  return _origTool(name, ...rest);
 };
 
 // ═══════════════════════════════════════
@@ -979,14 +993,17 @@ server.tool(
   {},
   async () => {
     const keys = generateKeyPair();
+    const isRemote = process.env.MCP_TRANSPORT === 'sse' || process.env.MCP_REMOTE === '1'
     return {
       content: [{
         type: "text" as const,
         text: JSON.stringify({
           publicKey: keys.publicKey,
-          privateKey: keys.privateKey,
+          privateKey: isRemote ? '[REDACTED — use local MCP for key generation]' : keys.privateKey,
           algorithm: "Ed25519",
-          note: "Use these with the identify tool or AGENT_KEY/AGENT_PRIVATE_KEY env vars.",
+          note: isRemote
+            ? "WARNING: Private key redacted because this is a remote MCP server. Generate keys locally via stdio transport for security."
+            : "Use these with the identify tool or AGENT_KEY/AGENT_PRIVATE_KEY env vars. WARNING: Private keys should not be transmitted over remote transports.",
         }, null, 2),
       }],
     };
@@ -1096,7 +1113,9 @@ server.tool(
         text: JSON.stringify({
           passport: attestedPassport,
           publicKey: attestedPassport.passport.publicKey,
-          privateKey: agent.keyPair.privateKey,
+          privateKey: (process.env.MCP_TRANSPORT === 'sse' || process.env.MCP_REMOTE === '1')
+            ? '[REDACTED — use local MCP for key generation]'
+            : agent.keyPair.privateKey,
           agentId: attestedPassport.passport.agentId,
           attestation: agent.attestation || null,
           passportAttestation: attestedPassport.attestation,
