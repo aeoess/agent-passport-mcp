@@ -49,7 +49,7 @@
   "homepage": "https://github.com/aeoess/agent-passport-mcp",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "agent-passport-system": "^1.36.1",
+    "agent-passport-system": "^1.36.2",
     "zod": "^3.25.76"
   },
   "devDependencies": {
