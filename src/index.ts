@@ -694,6 +694,173 @@ const _origTool: any = server.tool.bind(server);
 };
 
 // ═══════════════════════════════════════
+// Scope-Based Tool Filtering (Primitive #9: Tool Pool Assembly)
+// ═══════════════════════════════════════
+// Maps every tool to an APS delegation scope.
+// Agents with scoped delegations can query which tools match their scopes.
+// Tools mapped to '*' are always available (meta/utility tools).
+
+const TOOL_SCOPE_MAP: Record<string, string> = {
+  // Meta tools — always available
+  'list_profiles': '*',
+  'list_tools_for_scope': '*',
+
+  // Identity tools → 'identity'
+  'identify': 'identity',
+  'generate_keys': 'identity',
+  'issue_passport': 'identity',
+  'verify_issuer': 'identity',
+  'get_passport_grade': 'identity',
+  'list_issuance_records': 'identity',
+  'get_behavioral_sequence': 'identity',
+  'get_my_role': 'identity',
+  'compute_action_ref': 'identity',
+  'is_evidence_fresh': 'identity',
+  'classify_evidence_quality': 'identity',
+  'rotate_key': 'identity',
+  'verify_rotation_chain': 'identity',
+  'is_key_active': 'identity',
+
+  // Delegation tools → 'delegation'
+  'create_delegation': 'delegation',
+  'verify_delegation': 'delegation',
+  'revoke_delegation': 'delegation',
+  'sub_delegate': 'delegation',
+  'create_v2_delegation': 'delegation',
+  'supersede_v2_delegation': 'delegation',
+
+  // Principal/Endorsement tools → 'principal'
+  'create_principal': 'principal',
+  'endorse_agent': 'principal',
+  'verify_endorsement': 'principal',
+  'revoke_endorsement': 'principal',
+  'create_disclosure': 'principal',
+  'get_fleet_status': 'principal',
+
+  // Reputation tools → 'reputation'
+  'resolve_authority': 'reputation',
+  'check_tier': 'reputation',
+  'review_promotion': 'reputation',
+  'update_reputation': 'reputation',
+  'get_promotion_history': 'reputation',
+  'vouch_reputation': 'reputation',
+  'apply_reputation_downgrade': 'reputation',
+
+  // Coordination tools → 'coordination'
+  'create_task_brief': 'coordination',
+  'assign_agent': 'coordination',
+  'accept_assignment': 'coordination',
+  'submit_evidence': 'coordination',
+  'review_evidence': 'coordination',
+  'handoff_evidence': 'coordination',
+  'submit_deliverable': 'coordination',
+  'complete_task': 'coordination',
+  'list_tasks': 'coordination',
+  'get_task_detail': 'coordination',
+  'get_evidence': 'coordination',
+
+  // Communication tools → 'communication'
+  'send_message': 'communication',
+  'check_messages': 'communication',
+  'broadcast': 'communication',
+  'list_agents': 'communication',
+  'post_agora_message': 'communication',
+  'get_agora_topics': 'communication',
+  'get_agora_thread': 'communication',
+  'get_agora_by_topic': 'communication',
+  'register_agora_agent': 'communication',
+  'register_agora_public': 'communication',
+
+  // Governance tools → 'governance'
+  'load_values_floor': 'governance',
+  'attest_to_floor': 'governance',
+  'create_intent': 'governance',
+  'evaluate_intent': 'governance',
+  'create_agent_context': 'governance',
+  'execute_with_context': 'governance',
+  'complete_action': 'governance',
+  'create_policy_context': 'governance',
+  'create_attestation': 'governance',
+  'create_outcome_record': 'governance',
+  'add_principal_report': 'governance',
+  'check_anomaly': 'governance',
+  'define_emergency_pathway': 'governance',
+  'activate_emergency': 'governance',
+  'request_migration': 'governance',
+  'create_artifact_provenance': 'governance',
+  'create_charter': 'governance',
+  'verify_charter': 'governance',
+  'sign_charter': 'governance',
+  'evaluate_threshold': 'governance',
+  'create_approval_request': 'governance',
+  'add_approval_signature': 'governance',
+  'generate_governance_block': 'governance',
+  'verify_governance_block': 'governance',
+  'parse_governance_block_html': 'governance',
+  'governance_360': 'governance',
+  'generate_aps_txt': 'governance',
+  'verify_aps_txt': 'governance',
+  'resolve_path_terms': 'governance',
+  'create_chained_governance_block': 'governance',
+  'compute_governance_taint': 'governance',
+
+  // Commerce tools → 'commerce'
+  'commerce_preflight': 'commerce',
+  'get_commerce_spend': 'commerce',
+  'request_human_approval': 'commerce',
+
+  // Data tools → 'data'
+  'register_data_source': 'data',
+  'create_data_enforcement_gate': 'data',
+  'check_data_access': 'data',
+  'query_contributions': 'data',
+  'get_source_metrics': 'data',
+  'get_agent_data_footprint': 'data',
+  'generate_settlement': 'data',
+  'generate_compliance_report': 'data',
+  'record_training_use': 'data',
+  'get_model_data_sources': 'data',
+  'create_access_receipt': 'data',
+  'create_access_snapshot': 'data',
+  'create_derivation_receipt': 'data',
+  'create_decision_lineage_receipt': 'data',
+  'resolve_lineage': 'data',
+  'evaluate_revocation_impact': 'data',
+  'check_purpose_permitted': 'data',
+  'check_retention_expired': 'data',
+  'check_aggregate_constraints': 'data',
+  'check_jurisdiction_transfer': 'data',
+  'check_combination_permitted': 'data',
+  'detect_purpose_drift': 'data',
+  'resolve_rights_propagation': 'data',
+  'declare_reidentification_risk': 'data',
+  'file_data_dispute': 'data',
+  'check_usage_permitted': 'data',
+
+  // Gateway tools → 'gateway'
+  'create_gateway': 'gateway',
+  'register_gateway_agent': 'gateway',
+  'gateway_process_tool_call': 'gateway',
+  'gateway_approve': 'gateway',
+  'gateway_execute_approval': 'gateway',
+  'gateway_stats': 'gateway',
+
+  // Network tools → 'network'
+  'publish_intent_card': 'network',
+  'search_matches': 'network',
+  'get_digest': 'network',
+  'request_intro': 'network',
+  'respond_to_intro': 'network',
+  'remove_intent_card': 'network',
+
+  // Temporal tools → 'temporal'
+  'create_hybrid_timestamp': 'temporal',
+  'compare_timestamps': 'temporal',
+  'validate_temporal_rights': 'temporal',
+  'create_reserve_attestation': 'temporal',
+};
+
+// ═══════════════════════════════════════
 // TOOL: list_profiles
 // ═══════════════════════════════════════
 
@@ -706,6 +873,44 @@ server.tool(
       `• ${name} (${tools.size} tools): ${Array.from(tools).slice(0, 6).join(', ')}${tools.size > 6 ? '...' : ''}`
     );
     return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '122' : profileFilter?.size || '122'} tools)\n\n${lines.join('\n')}\n\n• full (122 tools): All tools exposed (default)` }] };
+  }
+);
+
+// ═══════════════════════════════════════
+// TOOL: list_tools_for_scope (Primitive #9: Tool Pool Assembly)
+// ═══════════════════════════════════════
+
+server.tool(
+  "list_tools_for_scope",
+  "List available MCP tools filtered by delegation scope. Pass your delegation scopes to see which tools you can use. Scopes: identity, delegation, principal, reputation, coordination, communication, governance, commerce, data, gateway, network, temporal. Use ['*'] for all tools.",
+  {
+    scopes: z.array(z.string()).describe("Your delegation scopes, e.g. ['identity', 'delegation', 'commerce']"),
+  },
+  async ({ scopes }) => {
+    const allTools = Object.entries(TOOL_SCOPE_MAP);
+    const scopeSet = new Set(scopes);
+    const filtered = allTools.filter(([_, scope]) =>
+      scope === '*' || scopeSet.has(scope) || scopeSet.has('*')
+    );
+
+    // Group by scope for readability
+    const byScope: Record<string, string[]> = {};
+    for (const [name, scope] of filtered) {
+      (byScope[scope] ??= []).push(name);
+    }
+
+    return {
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          total_tools: allTools.length,
+          accessible_tools: filtered.length,
+          scopes_provided: scopes,
+          tools_by_scope: byScope,
+          tools: filtered.map(([name, scope]) => ({ name, scope })),
+        }, null, 2),
+      }],
+    };
   }
 );
 
