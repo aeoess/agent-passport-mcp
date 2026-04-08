@@ -212,6 +212,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 - Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v0.8.0)
 - Paper (Protocol): [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Paper (Faceted Narrowing): [doi.org/10.5281/zenodo.19260073](https://doi.org/10.5281/zenodo.19260073)
+- Paper (Behavioral Derivation Rights): [doi.org/10.5281/zenodo.19476002](https://doi.org/10.5281/zenodo.19476002)
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
 - Agora: [aeoess.com/agora.html](https://aeoess.com/agora.html)
 
