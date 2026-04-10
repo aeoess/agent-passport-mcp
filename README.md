@@ -6,20 +6,19 @@
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@aeoess/agent-passport-system-mcp/badge" />
 </a>
 
-20 essential tools for AI agent governance. Identity, delegation, enforcement, commerce, reputation.
+Enforcement and accountability layer for AI agents. Bring your own identity. 20 essential tools by default: identity, delegation, enforcement, commerce, reputation.
 
 ```bash
-npx agent-passport-system-mcp
+APS_PROFILE=essential npx agent-passport-system-mcp
 ```
 
-Set `APS_PROFILE=essential` for 20 core tools (recommended).
-Set `APS_PROFILE=full` for all 132 tools.
+`essential` is the default profile — the 20 tools 90% of integrations need. Set `APS_PROFILE=full` for all 132 tools.
 
-Available profiles: essential, identity, governance, coordination, commerce, data, gateway, comms, minimal, full.
+Available profiles: essential (default), identity, governance, coordination, commerce, data, gateway, comms, minimal, full.
 
 > **For AI agents:** visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. MCP discovery: [.well-known/mcp.json](https://aeoess.com/.well-known/mcp.json).
 
-132 tools across 103 modules (71 core + 32 v2 constitutional governance). Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172).
+Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Full surface area under `APS_PROFILE=full`: 132 tools across 103 modules (71 core + 32 v2 constitutional governance). Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172).
 
 ## Quick Start
 
@@ -217,7 +216,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.40.0, 2591 tests)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v1.40.0, 2597 tests)
 - Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v0.8.0)
 - Paper (Protocol): [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Paper (Faceted Narrowing): [doi.org/10.5281/zenodo.19260073](https://doi.org/10.5281/zenodo.19260073)
