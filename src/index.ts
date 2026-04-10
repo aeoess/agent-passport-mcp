@@ -681,6 +681,15 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'create_delegation', 'verify_delegation',
     'create_intent', 'evaluate_intent', 'list_profiles',
   ]),
+  essential: new Set([
+    'generate_keys', 'issue_passport', 'get_passport_grade',
+    'create_delegation', 'verify_delegation', 'revoke_delegation', 'sub_delegate',
+    'load_values_floor', 'attest_to_floor',
+    'create_intent', 'evaluate_intent', 'complete_action',
+    'create_agent_context', 'execute_with_context',
+    'commerce_preflight', 'get_commerce_spend', 'request_human_approval',
+    'resolve_authority', 'check_tier', 'rotate_key',
+  ]),
 };
 
 const activeProfile = (process.env.APS_PROFILE || 'full').toLowerCase();
@@ -886,7 +895,7 @@ server.tool(
     const lines = Object.entries(TOOL_PROFILES).map(([name, tools]) =>
       `• ${name} (${tools.size} tools): ${Array.from(tools).slice(0, 6).join(', ')}${tools.size > 6 ? '...' : ''}`
     );
-    return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '122' : profileFilter?.size || '122'} tools)\n\n${lines.join('\n')}\n\n• full (122 tools): All tools exposed (default)` }] };
+    return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '132' : profileFilter?.size || '132'} tools)\n\nRecommended: essential (20 tools) — identity, delegation, enforcement, commerce, reputation.\n\n${lines.join('\n')}\n\n• full (132 tools): All tools exposed (default)` }] };
   }
 );
 
