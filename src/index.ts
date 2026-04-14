@@ -199,6 +199,12 @@ import {
   importReceipt, verifyReceiptEnvelope,
   vouchReputation, verifyVouchedReputation,
   applyReputationDowngrade,
+  // v2 boundary primitives (AttributionConsent, ProvisionalStatement, HumanEscalationFlag)
+  createAttributionReceipt, signAttributionConsent,
+  verifyAttributionConsent, checkArtifactCitations, receiptCore,
+  createProvisional, promoteStatement, verifyPromotion,
+  withdrawProvisional, withdrawalPayload, isBinding,
+  checkEscalationRequired, requestOwnerConfirmation, recordOwnerConfirmation,
 } from "agent-passport-system";
 
 import type {
@@ -689,6 +695,10 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'create_agent_context', 'execute_with_context',
     'commerce_preflight', 'get_commerce_spend', 'request_human_approval',
     'resolve_authority', 'check_tier', 'rotate_key',
+    // v2 boundary primitives — most-used entry points
+    'aps_create_attribution_receipt',
+    'aps_create_provisional',
+    'aps_check_escalation_required',
   ]),
 };
 
@@ -881,6 +891,19 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
   'compare_timestamps': 'temporal',
   'validate_temporal_rights': 'temporal',
   'create_reserve_attestation': 'temporal',
+
+  // v2 boundary primitives
+  'aps_create_attribution_receipt': 'governance',
+  'aps_sign_attribution_consent': 'governance',
+  'aps_verify_attribution_consent': 'governance',
+  'aps_check_artifact_citations': 'governance',
+  'aps_attribution_receipt_id': 'governance',
+  'aps_create_provisional': 'coordination',
+  'aps_promote_statement': 'coordination',
+  'aps_verify_promotion': 'coordination',
+  'aps_withdraw_provisional': 'coordination',
+  'aps_check_escalation_required': 'delegation',
+  'aps_record_owner_confirmation': 'delegation',
 };
 
 // ═══════════════════════════════════════
@@ -5772,6 +5795,257 @@ server.tool(
     }
     const active = isKeyActive(doc, args.public_key);
     return { content: [{ type: "text", text: `${active ? '✅ Active' : '🔒 Inactive/Retired'}\n\nKey: ${args.public_key.slice(0, 16)}...\nDID: ${doc.id || 'unknown'}\nVerification methods: ${doc.verificationMethod.length}\nRotation log entries: ${(doc.rotationLog || []).length}` }] };
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════
+// v2 Boundary Primitives — AttributionConsent, ProvisionalStatement,
+// HumanEscalationFlag. Representation, commitment, escalation boundaries.
+// ═══════════════════════════════════════════════════════════════
+
+// ── AttributionConsent (representation boundary) ────────────────
+
+server.tool(
+  "aps_create_attribution_receipt",
+  "Representation boundary: build a citer-signed AttributionReceipt attributing a claim to a third-party principal. The receipt is not yet valid — the cited principal must sign consent via aps_sign_attribution_consent before checkArtifactCitations accepts it.",
+  {
+    citer: z.string().describe("DID/public key of the citing agent"),
+    citer_public_key: z.string().describe("Hex public key of citer"),
+    citer_private_key: z.string().describe("Hex private key of citer"),
+    cited_principal: z.string().describe("DID/public key of the cited principal"),
+    cited_principal_public_key: z.string().describe("Hex public key of cited principal"),
+    citation_content: z.string().describe("The quoted or paraphrased claim"),
+    binding_context: z.string().describe("ID of the binding artifact this citation is scoped to"),
+    gateway_id: z.string().optional().describe("Gateway id for timestamping (default: 'mcp')"),
+    ttl_ms: z.number().optional().describe("Receipt TTL in ms (default: 24h)"),
+  },
+  async (args) => {
+    try {
+      const gw = args.gateway_id ?? 'mcp';
+      const ttl = args.ttl_ms ?? 24 * 3600_000;
+      const created_at = createHybridTimestamp(gw);
+      const expires_at = createHybridTimestamp(gw);
+      expires_at.wallClockEarliest = created_at.wallClockEarliest + ttl;
+      expires_at.wallClockLatest = created_at.wallClockLatest + ttl;
+      const receipt = createAttributionReceipt({
+        citer: args.citer,
+        citer_public_key: args.citer_public_key,
+        citer_private_key: args.citer_private_key,
+        cited_principal: args.cited_principal,
+        cited_principal_public_key: args.cited_principal_public_key,
+        citation_content: args.citation_content,
+        binding_context: args.binding_context,
+        created_at, expires_at,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(receipt, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("createAttributionReceipt failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_sign_attribution_consent",
+  "Representation boundary: the cited principal adds their consent signature to an AttributionReceipt. Without this signature, verifyAttributionConsent and checkArtifactCitations reject the receipt.",
+  {
+    receipt: z.any().describe("AttributionReceipt JSON from aps_create_attribution_receipt"),
+    cited_principal_private_key: z.string().describe("Hex private key of cited principal"),
+  },
+  async (args) => {
+    try {
+      const signed = signAttributionConsent(args.receipt, args.cited_principal_private_key);
+      return { content: [{ type: "text" as const, text: JSON.stringify(signed, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("signAttributionConsent failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_verify_attribution_consent",
+  "Representation boundary: verify an AttributionReceipt end-to-end (id, citer signature, consent signature, expiry). Returns {valid, reason?}.",
+  {
+    receipt: z.any().describe("AttributionReceipt JSON"),
+    now: z.any().optional().describe("Optional HybridTimestamp to pin the evaluation moment"),
+  },
+  async (args) => {
+    const result = verifyAttributionConsent(args.receipt, args.now);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+server.tool(
+  "aps_check_artifact_citations",
+  "Representation boundary: gate a binding artifact's citations. Each citation must resolve to a provided, signed, unexpired receipt whose content + principal match, with per-artifact replay protection.",
+  {
+    artifact: z.any().describe("CitingArtifact with optional citations[] array"),
+    receipts: z.array(z.any()).describe("AttributionReceipts backing each citation"),
+    binding_context: z.string().optional().describe("Require receipts to be scoped to this binding context"),
+  },
+  async (args) => {
+    const opts: { binding_context?: string } = {};
+    if (args.binding_context) opts.binding_context = args.binding_context;
+    const result = checkArtifactCitations(args.artifact, args.receipts, opts);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+server.tool(
+  "aps_attribution_receipt_id",
+  "Representation boundary helper: compute the canonical sha256 id of an AttributionReceipt's unsigned core. Verifiers use this to detect id tampering.",
+  {
+    receipt: z.any().describe("AttributionReceipt JSON (signatures ignored)"),
+  },
+  async (args) => {
+    const { createHash } = await import('crypto');
+    const core = receiptCore(args.receipt);
+    const id = createHash('sha256').update(core).digest('hex');
+    return { content: [{ type: "text" as const, text: JSON.stringify({ id, core_bytes: core.length }, null, 2) }] };
+  }
+);
+
+// ── ProvisionalStatement (commitment boundary) ──────────────────
+
+server.tool(
+  "aps_create_provisional",
+  "Commitment boundary: emit a provisional statement for agent-to-agent negotiation. Default is non-binding until a PromotionEvent satisfies a PromotionPolicy. Dead-man expiry auto-withdraws.",
+  {
+    author: z.string().describe("AgentDID/public key of the emitting agent"),
+    author_principal: z.string().describe("PrincipalDID behind the author"),
+    content: z.string().describe("Statement content (offer, position, claim)"),
+    author_private_key: z.string().describe("Hex private key of author for signing"),
+    gateway_id: z.string().optional().describe("Gateway id for timestamping (default: 'mcp')"),
+    dead_man_ms: z.number().optional().describe("Dead-man expiry relative to now (ms). If elapsed without promotion/withdrawal, statement auto-withdraws."),
+  },
+  async (args) => {
+    try {
+      const gw = args.gateway_id ?? 'mcp';
+      let dead_man_expires_at;
+      if (typeof args.dead_man_ms === 'number') {
+        const dm = createHybridTimestamp(gw);
+        dm.wallClockEarliest += args.dead_man_ms;
+        dm.wallClockLatest += args.dead_man_ms;
+        dead_man_expires_at = dm;
+      }
+      const statement = createProvisional({
+        author: args.author,
+        author_principal: args.author_principal,
+        content: args.content,
+        authorPrivateKey: args.author_private_key,
+        gatewayId: gw,
+        ...(dead_man_expires_at ? { dead_man_expires_at } : {}),
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(statement, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("createProvisional failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_promote_statement",
+  "Commitment boundary: promote a provisional statement to binding by attaching a PromotionEvent that satisfies the PromotionPolicy (m-of-n principal signatures). dead_man_elapsed cannot promote — it auto-withdraws via the dead-man path.",
+  {
+    statement: z.any().describe("ProvisionalStatement from aps_create_provisional"),
+    promotion_event: z.any().describe("PromotionEvent with kind, promoted_at, promoter, promoter_signature, policy_reference"),
+    policy: z.any().describe("PromotionPolicy {id, required_signers, threshold, max_time_to_promote}"),
+  },
+  async (args) => {
+    try {
+      const promoted = promoteStatement(args.statement, args.promotion_event, args.policy);
+      return { content: [{ type: "text" as const, text: JSON.stringify({ promoted, is_binding: isBinding(promoted) }, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("promoteStatement failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_verify_promotion",
+  "Commitment boundary: verify that a promoted statement's PromotionEvent cryptographically satisfies the PromotionPolicy (policy_reference match, promoter in required_signers, threshold, signature, max_time_to_promote, author-signature tamper check).",
+  {
+    statement: z.any().describe("Promoted ProvisionalStatement"),
+    policy: z.any().describe("PromotionPolicy to check against"),
+  },
+  async (args) => {
+    const result = verifyPromotion(args.statement, args.policy);
+    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+server.tool(
+  "aps_withdraw_provisional",
+  "Commitment boundary: author withdraws their own provisional statement. Already-promoted statements cannot be withdrawn. Caller must supply the author's signature over the withdrawal payload (canonicalize({action:'withdraw', statement_id})).",
+  {
+    statement: z.any().describe("ProvisionalStatement to withdraw"),
+    author_signature: z.string().optional().describe("Hex Ed25519 signature. If omitted, provide author_private_key and the tool will sign for you."),
+    author_private_key: z.string().optional().describe("If provided, tool signs the withdrawal payload with this key."),
+  },
+  async (args) => {
+    try {
+      let sig = args.author_signature;
+      if (!sig) {
+        if (!args.author_private_key) {
+          throw new Error('Supply author_signature or author_private_key');
+        }
+        const { sign } = await import('agent-passport-system');
+        sig = sign(withdrawalPayload(args.statement.id), args.author_private_key);
+      }
+      const withdrawn = withdrawProvisional(args.statement, sig);
+      return { content: [{ type: "text" as const, text: JSON.stringify(withdrawn, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("withdrawProvisional failed", e) }], isError: true };
+    }
+  }
+);
+
+// ── HumanEscalationFlag (escalation boundary) ───────────────────
+
+server.tool(
+  "aps_check_escalation_required",
+  "Escalation boundary: check whether an action on a v2 delegation requires owner confirmation before execution. Returns {required, requirement?, reason?}. Use aps_record_owner_confirmation to clear the flag when required.",
+  {
+    delegation: z.any().describe("V2Delegation with optional scope.escalation_requirements"),
+    action_class: z.string().describe("Action class (e.g. 'org_creation', 'spend_above_threshold')"),
+    action_details: z.any().optional().describe("Structured details; hashed for audit"),
+    session_id: z.string().optional().describe("Session id (required for per_session scope)"),
+  },
+  async (args) => {
+    const check = checkEscalationRequired(args.delegation, {
+      action_class: args.action_class,
+      action_details: args.action_details ?? {},
+      session_id: args.session_id ?? null,
+    });
+    return { content: [{ type: "text" as const, text: JSON.stringify(check, null, 2) }] };
+  }
+);
+
+server.tool(
+  "aps_record_owner_confirmation",
+  "Escalation boundary: owner signs an OwnerConfirmation authorizing a flagged action. Builds the ConfirmationRequest and signs it in a single call. The confirmation is bound to action_details via hash and scoped (per_action / per_session / time_window).",
+  {
+    delegation: z.any().describe("V2Delegation with escalation_requirements for this action class"),
+    action_class: z.string().describe("Action class being confirmed"),
+    action_details: z.any().describe("Structured action details — hashed and bound to the confirmation"),
+    session_id: z.string().optional().describe("Session id (required for per_session scope)"),
+    owner_private_key: z.string().describe("Hex private key of the delegation's owner (delegator)"),
+  },
+  async (args) => {
+    try {
+      const request = requestOwnerConfirmation(args.delegation, {
+        action_class: args.action_class,
+        action_details: args.action_details ?? {},
+        session_id: args.session_id ?? null,
+      });
+      const confirmation = recordOwnerConfirmation({
+        request,
+        delegation: args.delegation,
+        owner_private_key: args.owner_private_key,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify({ request, confirmation }, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("recordOwnerConfirmation failed", e) }], isError: true };
+    }
   }
 );
 

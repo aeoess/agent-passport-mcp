@@ -15,6 +15,7 @@
   ],
   "scripts": {
     "build": "npx tsc && chmod 755 build/bin.js build/index.js build/setup.js",
+    "test": "node --test tests/",
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepublishOnly": "npm run build",
@@ -49,7 +50,7 @@
   "homepage": "https://github.com/aeoess/agent-passport-mcp",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "agent-passport-system": "^1.41.0",
+    "agent-passport-system": "file:../agent-passport-system",
     "zod": "^3.25.76"
   },
   "devDependencies": {
