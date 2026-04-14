@@ -12,7 +12,7 @@ Enforcement and accountability layer for AI agents. Bring your own identity. 20 
 APS_PROFILE=essential npx agent-passport-system-mcp
 ```
 
-`essential` is the default profile — the 20 tools 90% of integrations need. Set `APS_PROFILE=full` for all 143 tools.
+`essential` is the default profile — the 143 tools 90% of integrations need. Set `APS_PROFILE=full` for all 143 tools.
 
 Available profiles: essential (default), identity, governance, coordination, commerce, data, gateway, comms, minimal, full.
 
