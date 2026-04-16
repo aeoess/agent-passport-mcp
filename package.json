@@ -1,8 +1,8 @@
 {
   "name": "agent-passport-system-mcp",
-  "version": "2.24.0",
+  "version": "2.25.0",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
-  "description": "MCP server for the Agent Passport System — enforcement infrastructure for the agent economy. 143 tools across 103 modules. Policy eval <2ms. Identity, delegation, reputation, enforcement, attestation, feeless Nano wallet, commerce. Tracks SDK v1.43.0 (2,848 tests).",
+  "description": "MCP server for the Agent Passport System — enforcement infrastructure for the agent economy. 138 tools across 104 modules. Policy eval <2ms. Identity, delegation, reputation, enforcement, attestation, feeless Nano wallet, commerce, attribution primitive. Tracks SDK v1.44.0 (2,910 tests).",
   "type": "module",
   "bin": {
     "agent-passport-system-mcp": "./build/bin.js",
@@ -50,7 +50,7 @@
   "homepage": "https://github.com/aeoess/agent-passport-mcp",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "agent-passport-system": "^1.42.0",
+    "agent-passport-system": "^1.44.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

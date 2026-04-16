@@ -205,6 +205,12 @@ import {
   createProvisional, promoteStatement, verifyPromotion,
   withdrawProvisional, withdrawalPayload, isBinding,
   checkEscalationRequired, requestOwnerConfirmation, recordOwnerConfirmation,
+  // Attribution Primitive (unified four-axis signed Merkle receipt)
+  computeAttributionActionRef,
+  constructAttributionPrimitive,
+  projectAttribution, projectAllAxes,
+  verifyAttributionProjection, verifyAttributionPrimitive,
+  checkProjectionConsistency,
 } from "agent-passport-system";
 
 import type {
@@ -904,6 +910,13 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
   'aps_withdraw_provisional': 'coordination',
   'aps_check_escalation_required': 'delegation',
   'aps_record_owner_confirmation': 'delegation',
+  // Attribution Primitive (unified four-axis signed Merkle receipt)
+  'aps_construct_attribution_primitive': 'governance',
+  'aps_project_attribution': 'governance',
+  'aps_verify_attribution_projection': 'governance',
+  'aps_verify_attribution_primitive': 'governance',
+  'aps_check_projection_consistency': 'governance',
+  'aps_compute_attribution_action_ref': 'identity',
 };
 
 // ═══════════════════════════════════════
@@ -6045,6 +6058,140 @@ server.tool(
       return { content: [{ type: "text" as const, text: JSON.stringify({ request, confirmation }, null, 2) }] };
     } catch (e: any) {
       return { content: [{ type: "text" as const, text: safeError("recordOwnerConfirmation failed", e) }], isError: true };
+    }
+  }
+);
+
+// ═══════════════════════════════════════
+// Attribution Primitive — unified four-axis signed Merkle receipt
+// Spec: ATTRIBUTION-PRIMITIVE-v1.1.md. One signed object per action with
+// four axis projections (D, P, G, C) that verify independently.
+// ═══════════════════════════════════════
+
+server.tool(
+  "aps_construct_attribution_primitive",
+  "Build and sign a four-axis AttributionPrimitive for an action. Axes: D (data sources), P (protocol modules), G (delegation chain), C (compute providers). Returns the complete signed object.",
+  {
+    action: z.object({
+      agentId: z.string(),
+      actionType: z.string(),
+      params: z.record(z.any()),
+      nonce: z.string(),
+    }).describe("Action identity tuple; the action_ref is derived as sha256(canonical(this))"),
+    axes: z.object({
+      D: z.array(z.any()),
+      P: z.array(z.any()),
+      G: z.array(z.any()),
+      C: z.array(z.any()),
+    }).describe("Four-axis content. See spec §1.2 for entry shapes per axis."),
+    issuer: z.string().describe("Issuer DID (gateway or agent producing the receipt)"),
+    issuer_private_key: z.string().describe("Ed25519 private key hex that signs the envelope"),
+    timestamp: z.string().optional().describe("ISO-8601 UTC with ms precision + Z (§2.5). Defaults to now()."),
+  },
+  async (args) => {
+    try {
+      const primitive = constructAttributionPrimitive({
+        action: args.action,
+        axes: args.axes as any,
+        issuer: args.issuer,
+        issuerPrivateKey: args.issuer_private_key,
+        timestamp: args.timestamp,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(primitive, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("constructAttributionPrimitive failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_project_attribution",
+  "Extract a single-axis projection from an AttributionPrimitive. The projection carries the axis content plus a two-hop Merkle path that lets a downstream verifier reconstruct the signed root without seeing the other three axes. axis: 'D' | 'P' | 'G' | 'C'.",
+  {
+    primitive: z.any().describe("An AttributionPrimitive (from aps_construct_attribution_primitive)"),
+    axis: z.enum(["D", "P", "G", "C"]).describe("Axis to project"),
+  },
+  async (args) => {
+    try {
+      const projection = projectAttribution(args.primitive, args.axis);
+      return { content: [{ type: "text" as const, text: JSON.stringify(projection, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("projectAttribution failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_verify_attribution_projection",
+  "Verify a single-axis AttributionProjection under the issuer's Ed25519 public key. Returns {valid: true} or {valid: false, reason: 'INVALID_AXIS_TAG'|'MERKLE_MISMATCH'|'SIGNATURE_INVALID'|'MALFORMED'}. Verification is purely local — no other axes required.",
+  {
+    projection: z.any().describe("An AttributionProjection (from aps_project_attribution)"),
+    issuer_public_key: z.string().describe("Issuer Ed25519 public key hex"),
+  },
+  async (args) => {
+    try {
+      const result = verifyAttributionProjection(args.projection, args.issuer_public_key);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("verifyAttributionProjection failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_verify_attribution_primitive",
+  "End-to-end verify of a full AttributionPrimitive: constructs projections for all four axes and verifies each one. Useful as a post-construction sanity check or for verifying a primitive received from a peer.",
+  {
+    primitive: z.any().describe("An AttributionPrimitive"),
+    issuer_public_key: z.string().describe("Issuer Ed25519 public key hex"),
+  },
+  async (args) => {
+    try {
+      const result = verifyAttributionPrimitive(args.primitive, args.issuer_public_key);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("verifyAttributionPrimitive failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_check_projection_consistency",
+  "Cross-projection consistency check (§2.4): given two projections, confirm they originate from the same signed receipt. Returns {same_receipt: true} or {same_receipt: false, reason: 'DIFFERENT_ACTIONS'|'DIFFERENT_RECEIPTS'|'DIFFERENT_SIGNATURES'|'METADATA_MISMATCH'}.",
+  {
+    projection_a: z.any().describe("First AttributionProjection"),
+    projection_b: z.any().describe("Second AttributionProjection"),
+  },
+  async (args) => {
+    try {
+      const result = checkProjectionConsistency(args.projection_a, args.projection_b);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("checkProjectionConsistency failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_compute_attribution_action_ref",
+  "Derive the action_ref (hex sha256) for an action tuple. action_ref is the content-addressed anchor that all four axis projections bind to. Useful for indexing primitives by action without constructing the full primitive.",
+  {
+    agentId: z.string(),
+    actionType: z.string(),
+    params: z.record(z.any()),
+    nonce: z.string(),
+  },
+  async (args) => {
+    try {
+      const action_ref = computeAttributionActionRef({
+        agentId: args.agentId,
+        actionType: args.actionType,
+        params: args.params,
+        nonce: args.nonce,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify({ action_ref }, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("computeAttributionActionRef failed", e) }], isError: true };
     }
   }
 );
