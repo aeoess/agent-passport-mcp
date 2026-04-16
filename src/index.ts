@@ -211,6 +211,9 @@ import {
   projectAttribution, projectAllAxes,
   verifyAttributionProjection, verifyAttributionPrimitive,
   checkProjectionConsistency,
+  // Attribution Weights (Build B — fractional D/C axis weight formulas)
+  computeDataAxisWeights, computeComputeAxisWeights,
+  DEFAULT_WEIGHT_PROFILE,
 } from "agent-passport-system";
 
 import type {
@@ -920,6 +923,11 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
   'aps_verify_attribution_primitive': 'governance',
   'aps_check_projection_consistency': 'governance',
   'aps_compute_attribution_action_ref': 'identity',
+  // Attribution Weights — Build B (fractional D/C axis formulas). Spec
+  // calls for a dedicated 'attribution' scope; integration-layer tools,
+  // not in the essential profile.
+  'aps_compute_data_axis_weights': 'attribution',
+  'aps_compute_compute_axis_weights': 'attribution',
 };
 
 // ═══════════════════════════════════════
@@ -944,7 +952,7 @@ server.tool(
 
 server.tool(
   "list_tools_for_scope",
-  "List available MCP tools filtered by delegation scope. Pass your delegation scopes to see which tools you can use. Scopes: identity, delegation, principal, reputation, coordination, communication, governance, commerce, data, gateway, network, temporal. Use ['*'] for all tools.",
+  "List available MCP tools filtered by delegation scope. Pass your delegation scopes to see which tools you can use. Scopes: identity, delegation, principal, reputation, coordination, communication, governance, commerce, data, gateway, network, temporal, attribution. Use ['*'] for all tools.",
   {
     scopes: z.array(z.string()).describe("Your delegation scopes, e.g. ['identity', 'delegation', 'commerce']"),
   },
@@ -6198,6 +6206,69 @@ server.tool(
     }
   }
 );
+
+// ═══════════════════════════════════════
+// Attribution Weights — Build B fractional weight formulas
+// Spec: BUILD-B-FRACTIONAL-WEIGHTS.md. Upstream of constructAttributionPrimitive:
+// compute canonical D/C axis weights from raw per-source / per-provider records,
+// then hand the resulting axis entries to aps_construct_attribution_primitive.
+// ═══════════════════════════════════════
+
+server.tool(
+  "aps_compute_data_axis_weights",
+  "Compute the D-axis fractional weight vector from a list of AccessReceipt records with role, timestamp, and content length. Returns canonical DataAxisEntry[] with 6-digit decimal contribution_weight strings that sum to ~1.0 and feed directly into aps_construct_attribution_primitive. Empty input → empty array; all-zero raw weights → error. Weights = role × recency_decay × length_weight, normalized per spec BUILD-B §'The D-axis formula'. Parameter names match the SDK: `sources`, `action_timestamp`, optional `profile`.",
+  {
+    sources: z.array(z.object({
+      source_did: z.string(),
+      access_receipt_hash: z.string(),
+      role: z.enum([
+        'primary_source', 'supporting_evidence', 'context_only', 'background_retrieval',
+      ]),
+      timestamp: z.string().describe("ISO-8601 UTC with millisecond precision + Z (t_source)"),
+      content_length: z.number().nonnegative().describe("Tokens"),
+    })).describe("Per-source records with retrieval metadata"),
+    action_timestamp: z.string().describe("ISO-8601 UTC ms when the action ran (t_action)"),
+    profile: z.any().optional().describe("Optional WeightProfile override; defaults to DEFAULT_WEIGHT_PROFILE"),
+  },
+  async (args) => {
+    try {
+      const entries = computeDataAxisWeights(args.sources, {
+        action_timestamp: args.action_timestamp,
+        profile: args.profile,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("computeDataAxisWeights failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_compute_compute_axis_weights",
+  "Compute the C-axis fractional weight vector from a list of inference billing records (prompt_tokens, completion_tokens). Returns canonical ComputeAxisEntry[] with 6-digit decimal compute_share strings that sum to ~1.0 and feed directly into aps_construct_attribution_primitive. Weights = prompt_tokens + completion_tokens × COMPLETION_MULTIPLIER (default 3.0), normalized per spec BUILD-B §'The C-axis formula'. Parameter names match the SDK: `providers`, optional `profile`.",
+  {
+    providers: z.array(z.object({
+      provider_did: z.string(),
+      hardware_attestation_hash: z.string(),
+      prompt_tokens: z.number().nonnegative(),
+      completion_tokens: z.number().nonnegative(),
+    })).describe("Per-provider billing records"),
+    profile: z.any().optional().describe("Optional WeightProfile override; defaults to DEFAULT_WEIGHT_PROFILE"),
+  },
+  async (args) => {
+    try {
+      const entries = computeComputeAxisWeights(args.providers, { profile: args.profile });
+      return { content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("computeComputeAxisWeights failed", e) }], isError: true };
+    }
+  }
+);
+
+// Keep DEFAULT_WEIGHT_PROFILE referenced so tree-shakers don't drop it
+// from the compiled bundle — consumers of the two tools above will want
+// to introspect the defaults.
+void DEFAULT_WEIGHT_PROFILE;
 
 server.prompt(
   "coordination_role",
