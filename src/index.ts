@@ -705,6 +705,9 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'aps_create_attribution_receipt',
     'aps_create_provisional',
     'aps_check_escalation_required',
+    // Build A attribution primitive — most-used entry points
+    'aps_construct_attribution_primitive',
+    'aps_verify_attribution_primitive',
   ]),
 };
 
