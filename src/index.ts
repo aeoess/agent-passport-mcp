@@ -214,6 +214,11 @@ import {
   // Attribution Weights (Build B — fractional D/C axis weight formulas)
   computeDataAxisWeights, computeComputeAxisWeights,
   DEFAULT_WEIGHT_PROFILE,
+  // Attribution Settlement (Build C — per-period signed settlement record)
+  aggregateAttributionPrimitives,
+  buildContributorQueryResponse,
+  signSettlementRecord,
+  verifySettlementRecord,
 } from "agent-passport-system";
 
 import type {
@@ -928,6 +933,11 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
   // not in the essential profile.
   'aps_compute_data_axis_weights': 'attribution',
   'aps_compute_compute_axis_weights': 'attribution',
+  // Attribution Settlement (Build C) — new 'settlement' scope, not in
+  // essentials profile. Integration-layer tools only.
+  'aps_aggregate_settlement': 'settlement',
+  'aps_verify_settlement': 'settlement',
+  'aps_build_contributor_query': 'settlement',
 };
 
 // ═══════════════════════════════════════
@@ -6269,6 +6279,88 @@ server.tool(
 // from the compiled bundle — consumers of the two tools above will want
 // to introspect the defaults.
 void DEFAULT_WEIGHT_PROFILE;
+
+// ═══════════════════════════════════════
+// Attribution Settlement — Build C per-period settlement record.
+// Spec: BUILD-C-SETTLEMENT-PIPELINE.md. Aggregates a stream of
+// AttributionPrimitives over [t0, t1) into one signed record per axis
+// with a balanced-Merkle commitment. Settlement is evidence, not
+// payment — economic conversion is gateway-private.
+// ═══════════════════════════════════════
+
+const SettlementPeriodSchema = z.object({
+  t0: z.string().describe("Period start (canonical ISO-8601 UTC ms + Z). Inclusive."),
+  t1: z.string().describe("Period end (canonical ISO-8601 UTC ms + Z). Exclusive."),
+  period_id: z.string().describe("Gateway-scoped period identifier"),
+});
+
+server.tool(
+  "aps_aggregate_settlement",
+  "Aggregate a batch of Attribution Primitives over a half-open settlement period [t0, t1) into a signed SettlementRecord. Each axis (D, P, G, C) produces a per-contributor total with a balanced-Merkle commitment. Residual buckets pool sub-threshold contributors per Build A §4.1. Output is a fully signed record ready for third-party verification. Spec: BUILD-C-SETTLEMENT-PIPELINE.md.",
+  {
+    receipts: z.array(z.any()).describe("Array of AttributionPrimitives to aggregate"),
+    period: SettlementPeriodSchema,
+    gateway_did: z.string().describe("Gateway DID that signs the record"),
+    gateway_private_key: z.string().describe("Ed25519 gateway private key (hex)"),
+    issued_at: z.string().optional().describe("Override issued_at (canonical ISO-8601 UTC ms + Z); defaults to now"),
+  },
+  async (args) => {
+    try {
+      const unsigned = aggregateAttributionPrimitives(args.receipts, args.period, {
+        gateway_did: args.gateway_did,
+        issued_at: args.issued_at,
+      });
+      const signature = signSettlementRecord(unsigned, args.gateway_private_key);
+      const record = { ...unsigned, signature };
+      return { content: [{ type: "text" as const, text: JSON.stringify(record, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("aggregateSettlement failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_verify_settlement",
+  "Verify a signed SettlementRecord under S1-S5 (signature, Merkle roots, conservation, residual shape, optional input-receipts cross-check). S3 conservation is the strongest invariant: a gateway cannot inflate or suppress any contributor's share without breaking it. Returns {valid: true} or {valid: false, reason, detail}. Pass inputReceipts to also recompute input_receipts_hash.",
+  {
+    record: z.any().describe("A signed SettlementRecord"),
+    gateway_public_key: z.string().describe("Gateway Ed25519 public key hex"),
+    input_receipts: z.array(z.any()).optional().describe("Optional — the input Attribution Primitives that fed the settlement. When supplied, S5 cross-checks input_receipts_hash and verifies each receipt individually."),
+  },
+  async (args) => {
+    try {
+      const result = verifySettlementRecord(args.record, {
+        gatewayPublicKeyHex: args.gateway_public_key,
+        inputReceipts: args.input_receipts,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("verifySettlement failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "aps_build_contributor_query",
+  "Build a contributor-query response: given a signed SettlementRecord and a contributor DID, return per-axis (total_weight, contribution_count, merkle_path, axis_root) plus the full signed record so a third party can verify the contributor's share end-to-end without trusting the gateway beyond its public key. Returns null if the contributor has no share in the period.",
+  {
+    record: z.any().describe("A signed SettlementRecord"),
+    contributor_did: z.string().describe("Contributor DID (data source, compute provider, governance signer, or protocol module identifier)"),
+    gateway_jwks: z.string().optional().describe("Advisory JWKS URL; not part of the signed material"),
+  },
+  async (args) => {
+    try {
+      const response = buildContributorQueryResponse(args.record, args.contributor_did, {
+        gateway_jwks: args.gateway_jwks,
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(response, null, 2) }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("buildContributorQuery failed", e) }], isError: true };
+    }
+  }
+);
 
 server.prompt(
   "coordination_role",

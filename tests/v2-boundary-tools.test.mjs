@@ -45,9 +45,9 @@ test('all 11 v2 boundary tools are registered in src/index.ts', () => {
   }
 })
 
-test('tool count is exactly 151', () => {
+test('tool count is exactly 154', () => {
   const count = (INDEX_SRC.match(/server\.tool\(/g) || []).length
-  assert.equal(count, 151, `Expected 151 server.tool( calls, got ${count}`)
+  assert.equal(count, 154, `Expected 154 server.tool( calls, got ${count}`)
 })
 
 test('essential profile includes 3 new boundary tools', () => {
