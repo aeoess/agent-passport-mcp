@@ -24,8 +24,6 @@ import {
   joinSocialContract, verifySocialContract, generateKeyPair,
   delegate, recordWork, sign,
   countersignPassport, verifyIssuerSignature, isIssuerVerified,
-  // Agent Context (enforcement middleware)
-  createAgentContext, AgentContext,
   // Coordination (Layer 6)
   createTaskBrief, verifyTaskBrief,
   assignTask, acceptTask,
@@ -49,9 +47,6 @@ import {
   // Commerce (Layer 8)
   commercePreflight, createCommerceDelegation,
   getSpendSummary, requestHumanApproval,
-  // Integration bridges
-  commerceWithIntent, coordinationToAgora,
-  postTaskCreated, postReviewCompleted, postTaskCompleted,
   // Principal Identity
   createPrincipalIdentity, endorseAgent, verifyEndorsement,
   revokeEndorsement, createDisclosure, verifyDisclosure,
@@ -64,10 +59,6 @@ import {
   triggerDemotion, updateReputationFromResult,
   DEFAULT_TIERS, DEFAULT_PROMOTION_REQUIREMENTS,
   meetsPromotionRequirements,
-  // Proxy Gateway (Enforcement Boundary)
-  ProxyGateway, createProxyGateway,
-  // Intent Network (Agent-Mediated Matching) — card creation only, API handles persistence
-  createIntentCard, verifyIntentCard,
   // v2: Constitutional Governance Extensions
   createPolicyContext, isPolicyContextActive, isPolicyContextInGrace,
   createArtifactProvenance, verifyArtifactIntegrity,
@@ -82,19 +73,13 @@ import {
   // v2: Outcome Registration
   createV2OutcomeRecord, addV2PrincipalReport, addV2AdjudicatedReport,
   getV2EffectiveDivergence, isV2AgentFlaggedForReview, clearV2OutcomeStore,
-  // v2: Anomaly Detection
-  recordV2Action, checkV2FirstMaxAuthority, validateV2UncertaintyCompliance,
-  computeV2ConcentrationMetrics, clearV2AnomalyStores,
+  // v2: Anomaly Detection (primitives only — v2 store/detector helpers moved to gateway)
+  validateV2UncertaintyCompliance,
   // v2: Emergency Pathways
   defineV2EmergencyPathway, activateV2Emergency, logV2EmergencyAction,
   reviewV2Emergency, getV2ActiveEmergencies, clearV2EmergencyStores,
-  // v2: Migration
-  requestV2Migration, approveV2Migration, executeV2Migration,
-  isV2InProbation, computeV2MigrationDiscount, traceV2MigrationLineage,
-  rollbackV2Migration, clearV2MigrationStores,
-  // v2: Attestation
-  createV2Attestation, assessV2AttestationQuality, getV2AgentAttestationQualityAvg,
-  clearV2AttestationStore,
+  // v2: Attestation (assessV2AttestationQuality is the primitive; lifecycle helpers moved to gateway)
+  assessV2AttestationQuality,
 } from "agent-passport-system";
 
 // Agent Attestation Architecture (Phase 1 — Consilium Build)
@@ -121,7 +106,6 @@ import type {
 } from "agent-passport-system";
 
 import type {
-  CoordinationEventType,
   PolicyContext, V2Delegation, OutcomeRecord,
   AnomalyFlag, ConcentrationMetrics, ContextualAttestation,
   MigrationRecord, ArtifactProvenance,
@@ -138,23 +122,15 @@ import type {
   GatewayConfig, ToolCallRequest, ToolExecutor,
 } from "agent-passport-system";
 
-// Data Governance (Modules 36A, 38, 39 + Enforcement Gate + Training Attribution)
+// Data Governance (Modules 36A, 38, 39 — protocol primitives only;
+// ContributionLedger/DataEnforcementGate/settlement generation moved to gateway.)
 import {
   registerSelfAttestedSource, recordDataAccess, checkTermsCompliance,
   buildDataAccessMerkleRoot, verifyDataAccessReceipt,
-  createContributionLedger, recordContribution, queryContributions,
-  getSourceMetrics, getAgentDataFootprint,
-  generateSettlement, verifySettlement, generateDataComplianceReport,
-  DataEnforcementGate,
-  createTrainingAttribution, verifyTrainingAttribution,
-  createTrainingLedger, recordTrainingAttribution,
-  getModelDataSources, getSourceTrainingCount,
 } from "agent-passport-system";
 
 import type {
   SourceReceipt, DataAccessReceipt, DataTerms,
-  ContributionLedger, ContributionRecord, SettlementRecord,
-  TrainingAttributionReceipt, TrainingAttributionLedger,
 } from "agent-passport-system";
 
 // Data Lifecycle Governance (Modules 43+)
@@ -257,8 +233,7 @@ interface SessionState {
   commerceSpendLog: Array<{ amount: number; currency: string; merchant: string; timestamp: string }>;
   // Intents (for policy evaluation chain)
   intents: Map<string, ActionIntent>;
-  // Agent Context (enforcement middleware)
-  agentContext: AgentContext | null;
+  // Enforcement middleware surface (floor still drives local policy evaluation)
   floor: ValuesFloor | null;
   pendingActions: Map<string, ExecuteResult>;
   // Principal Identity
@@ -269,14 +244,8 @@ interface SessionState {
   // Reputation-Gated Authority (Layer 9)
   reputations: Map<string, ScopedReputation>;   // key: "principalId:agentId:scope"
   promotionHistory: Array<{ review: any; appliedAt: string }>;
-  // Proxy Gateway
-  gateway: ProxyGateway | null;
-  gatewayKeys: { publicKey: string; privateKey: string } | null;
-  // Data Governance (Modules 36A, 38, 39)
-  dataEnforcementGate: DataEnforcementGate | null;
-  contributionLedger: ContributionLedger;
+  // Data Governance (protocol primitives only — ledgers/gates moved to gateway)
   sourceReceipts: Map<string, SourceReceipt>;
-  trainingLedger: TrainingAttributionLedger;
   derivationStore: Map<string, DerivationReceipt>;
   // Session passport (created on identify, reused by commerce tools)
   sessionAgent: SocialContractAgent | null;
@@ -363,7 +332,6 @@ const state: SessionState = {
   floorYaml: null,
   commerceSpendLog: [],
   intents: new Map(),
-  agentContext: null,
   floor: null,
   pendingActions: new Map(),
   principal: null,
@@ -372,12 +340,7 @@ const state: SessionState = {
   fleet: null,
   reputations: new Map(),
   promotionHistory: [],
-  gateway: null,
-  gatewayKeys: null,
-  dataEnforcementGate: null,
-  contributionLedger: createContributionLedger(),
   sourceReceipts: new Map(),
-  trainingLedger: createTrainingLedger(),
   derivationStore: new Map<string, DerivationReceipt>(),
   sessionAgent: null,
   charters: new Map(),
@@ -564,31 +527,15 @@ function persistAgoraFeed(): void {
   }
 }
 
+// Coordination→Agora bridge moved to gateway in v3.0.0.
+// Task-lifecycle events still happen locally; cross-agent broadcast is a
+// gateway concern now.
 function emitAgoraEvent(
-  event: CoordinationEventType,
-  taskId: string,
-  detail: string,
+  _event: string,
+  _taskId: string,
+  _detail: string,
 ): void {
-  // Skip if no identity — can't sign messages
-  if (!state.agentKey || !state.privateKey) return;
-
-  try {
-    const result = coordinationToAgora({
-      event,
-      taskId,
-      agentId: state.agentId || 'anonymous',
-      agentName: getAgentName(),
-      publicKey: state.agentKey,
-      privateKey: state.privateKey,
-      feed: state.agoraFeed,
-      registry: state.agoraRegistry,
-      detail,
-    });
-    state.agoraFeed = result.feed;
-    persistAgoraFeed();
-  } catch {
-    // Non-fatal: coordination still works even if Agora post fails
-  }
+  // No-op in protocol-only MCP. Gateway callers handle Agora propagation.
 }
 
 function loadAgentsRegistry(): Array<{ agentId: string; agentName: string; publicKey: string; status: string; role: string; runtime: string; capabilities: string[] }> {
@@ -604,6 +551,27 @@ async function signMessage(content: string): Promise<string> {
   try {
     return await sign(content, state.privateKey);
   } catch { return ''; }
+}
+
+// ═══════════════════════════════════════
+// Gateway Deprecation Helper (v3.0.0)
+// ═══════════════════════════════════════
+// Tools that required product-layer code (ProxyGateway, DataEnforcementGate,
+// ContributionLedger, AgentContext) now live in the private gateway product.
+// Stubs preserve discoverability so callers learn where to migrate.
+function movedToGateway(toolName: string) {
+  return {
+    content: [{
+      type: "text" as const,
+      text: JSON.stringify({
+        error: `[deprecated in MCP v3.0.0] This tool (${toolName}) was removed because it required product-layer code that now lives in the private gateway. Use the gateway.aeoess.com REST API for this functionality, or stay on agent-passport-system-mcp@2.27.0 (pins to agent-passport-system@^1.46.0) if you need the old tools.`,
+        migration: "https://gateway.aeoess.com/docs",
+        deprecated_in: "3.0.0",
+        last_working_mcp: "2.27.0",
+      }),
+    }],
+    isError: true,
+  };
 }
 
 // ═══════════════════════════════════════
@@ -644,9 +612,9 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'create_delegation', 'verify_delegation', 'revoke_delegation',
     'create_charter', 'sign_charter', 'verify_charter',
     'evaluate_threshold', 'create_approval_request', 'add_approval_signature',
-    'create_attestation', 'create_outcome_record', 'add_principal_report',
-    'check_anomaly', 'activate_emergency', 'define_emergency_pathway',
-    'request_migration', 'create_artifact_provenance', 'create_policy_context',
+    'create_outcome_record', 'add_principal_report',
+    'activate_emergency', 'define_emergency_pathway',
+    'create_artifact_provenance', 'create_policy_context',
     'generate_governance_block', 'verify_governance_block',
     'parse_governance_block_html', 'governance_360',
     'generate_aps_txt', 'verify_aps_txt', 'resolve_path_terms',
@@ -665,10 +633,8 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
   ]),
   data: new Set([
     'identify', 'generate_keys', 'create_principal',
-    'register_data_source', 'create_data_enforcement_gate', 'check_data_access',
-    'query_contributions', 'get_source_metrics', 'get_agent_data_footprint',
-    'generate_settlement', 'generate_compliance_report',
-    'record_training_use', 'get_model_data_sources',
+    'register_data_source', 'create_data_enforcement_gate',
+    'query_contributions', 'generate_settlement',
     'create_access_receipt', 'create_access_snapshot',
     'create_derivation_receipt', 'create_decision_lineage_receipt',
     'resolve_lineage', 'evaluate_revocation_impact',
@@ -680,8 +646,8 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
   ]),
   gateway: new Set([
     'identify', 'generate_keys', 'create_principal',
-    'create_gateway', 'register_gateway_agent',
-    'gateway_process_tool_call', 'gateway_approve', 'gateway_execute_approval',
+    'create_gateway',
+    'gateway_process_tool_call', 'gateway_approve',
     'gateway_stats', 'create_delegation', 'load_values_floor', 'attest_to_floor',
     'create_hybrid_timestamp', 'compare_timestamps', 'validate_temporal_rights',
     'create_reserve_attestation', 'vouch_reputation', 'apply_reputation_downgrade',
@@ -692,7 +658,7 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'post_agora_message', 'get_agora_topics', 'get_agora_thread',
     'get_agora_by_topic', 'register_agora_agent',
     'send_message', 'check_messages', 'broadcast', 'list_agents',
-    'publish_intent_card', 'remove_intent_card', 'search_matches',
+    'remove_intent_card', 'search_matches',
     'request_intro', 'respond_to_intro', 'get_digest',
     'register_agora_public',
   ]),
@@ -830,13 +796,10 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
   'execute_with_context': 'governance',
   'complete_action': 'governance',
   'create_policy_context': 'governance',
-  'create_attestation': 'governance',
   'create_outcome_record': 'governance',
   'add_principal_report': 'governance',
-  'check_anomaly': 'governance',
   'define_emergency_pathway': 'governance',
   'activate_emergency': 'governance',
-  'request_migration': 'governance',
   'create_artifact_provenance': 'governance',
   'create_charter': 'governance',
   'verify_charter': 'governance',
@@ -862,14 +825,8 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
   // Data tools → 'data'
   'register_data_source': 'data',
   'create_data_enforcement_gate': 'data',
-  'check_data_access': 'data',
   'query_contributions': 'data',
-  'get_source_metrics': 'data',
-  'get_agent_data_footprint': 'data',
   'generate_settlement': 'data',
-  'generate_compliance_report': 'data',
-  'record_training_use': 'data',
-  'get_model_data_sources': 'data',
   'create_access_receipt': 'data',
   'create_access_snapshot': 'data',
   'create_derivation_receipt': 'data',
@@ -889,14 +846,11 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
 
   // Gateway tools → 'gateway'
   'create_gateway': 'gateway',
-  'register_gateway_agent': 'gateway',
   'gateway_process_tool_call': 'gateway',
   'gateway_approve': 'gateway',
-  'gateway_execute_approval': 'gateway',
   'gateway_stats': 'gateway',
 
   // Network tools → 'network'
-  'publish_intent_card': 'network',
   'search_matches': 'network',
   'get_digest': 'network',
   'request_intro': 'network',
@@ -1360,7 +1314,7 @@ server.tool(
 
     // Classify the behavioral pattern
     const toolNames = sequence.map(s => s.tool);
-    const hasWork = toolNames.some(t => ['submit_evidence', 'publish_intent_card', 'create_agora_message', 'submit_deliverable'].includes(t));
+    const hasWork = toolNames.some(t => ['submit_evidence', 'create_agora_message', 'submit_deliverable'].includes(t));
     const hasExtraction = toolNames.some(t => ['commerce_preflight', 'create_checkout'].includes(t));
     const pattern = hasWork ? 'productive' : hasExtraction ? 'extractive' : 'neutral';
 
@@ -2924,7 +2878,7 @@ server.tool(
     const actualSpendLimit = sessionDel?.spendLimit ?? 1000;
     const hasCommerceScope = sessionDel
       ? sessionDel.scope.some((s: string) => s === 'commerce' || s === 'commerce:checkout' || s.startsWith('commerce'))
-      : (state.agentContext ? true : false); // fallback to context if no delegation found
+      : false; // no delegation → no commerce scope (agent-context fallback removed with gateway move)
 
     // Use session agent if available (created by identify), fallback to throwaway
     const agent = state.sessionAgent || joinSocialContract({
@@ -3033,189 +2987,38 @@ server.tool(
 
 server.tool(
   "create_agent_context",
-  "Create an enforcement context that automatically runs every action through the 3-signature policy chain. Without this, policy checks are opt-in. With this, agents physically cannot skip enforcement.",
+  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Create an enforcement context that automatically runs every action through the 3-signature policy chain.",
   {
     name: z.string().describe("Agent name"),
     mission: z.string().describe("Agent mission statement"),
-    enforcement: z.enum(["auto", "manual", "strict"]).default("auto").describe("Enforcement level: auto (every action checked), manual (tracking only), strict (auto + additional constraints)"),
-    delegated_scopes: z.array(z.string()).default([]).describe("Scopes to delegate (e.g. ['data:read', 'api:fetch', 'commerce:checkout'])"),
+    enforcement: z.enum(["auto", "manual", "strict"]).default("auto").describe("Enforcement level"),
+    delegated_scopes: z.array(z.string()).default([]).describe("Scopes to delegate"),
     spend_limit: z.number().default(1000).describe("Maximum spend allowed"),
   },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-
-    if (!state.floorYaml) {
-      return { content: [{ type: "text" as const, text: 'No floor loaded. Use load_values_floor first.' }], isError: true };
-    }
-
-    try {
-      const floor = loadFloor(state.floorYaml);
-
-      // Create the agent with floor attestation
-      const agent = joinSocialContract({
-        name: args.name,
-        mission: args.mission,
-        owner: 'mcp-session',
-        capabilities: args.delegated_scopes,
-        platform: 'node',
-        models: ['mcp'],
-        floor,
-      });
-
-      // Create the enforced context
-      const ctx = createAgentContext(agent, floor, {
-        enforcement: args.enforcement as EnforcementLevel,
-      });
-
-      // Add delegation if scopes provided
-      if (args.delegated_scopes.length > 0) {
-        const principal = joinSocialContract({
-          name: 'mcp-principal',
-          mission: 'MCP session principal',
-          owner: 'human',
-          capabilities: ['admin'],
-          platform: 'node',
-          models: ['mcp'],
-          floor,
-        });
-
-        const del = delegate({
-          from: principal,
-          toPublicKey: agent.publicKey,
-          scope: args.delegated_scopes,
-          spendLimit: args.spend_limit,
-          maxDepth: 3,
-          expiresInHours: 24,
-        });
-
-        ctx.addDelegation(del);
-      }
-
-      state.agentContext = ctx;
-      state.floor = floor;
-
-      // F-4 fix: also register in state.agents so gateway and other tools can find this agent
-      state.agents.set(agent.agentId, agent as any);
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            created: true,
-            enforcement: args.enforcement,
-            agentId: agent.agentId,
-            scopes: args.delegated_scopes,
-            spendLimit: args.spend_limit,
-            note: `Agent Context active (${args.enforcement} mode). Use execute_with_context to run actions through the 3-signature chain.`,
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Failed to create context", e) }], isError: true };
-    }
-  }
+  async (_args) => movedToGateway("create_agent_context")
 );
 
 server.tool(
   "execute_with_context",
-  "Execute an action through the enforcement context. Automatically runs the 3-signature chain: creates intent (sig 1), evaluates against floor + delegation (sig 2), returns verdict. Action is DENIED if outside delegated scope.",
+  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Execute an action through the enforcement context.",
   {
     action_type: z.string().describe("Action type (e.g. 'api:fetch', 'data:write', 'commerce:checkout')"),
     target: z.string().describe("Target of the action (e.g. URL, file path, resource ID)"),
     scope: z.string().describe("Required scope for this action (must match a delegated scope)"),
     estimated_spend: z.number().optional().describe("Estimated spend for commerce actions"),
   },
-  async (args) => {
-    if (!state.agentContext) {
-      return { content: [{ type: "text" as const, text: 'No agent context. Use create_agent_context first.' }], isError: true };
-    }
-
-    try {
-      const result = state.agentContext.execute({
-        type: args.action_type,
-        target: args.target,
-        scope: args.scope,
-        spend: args.estimated_spend ? { amount: args.estimated_spend, currency: 'USD' } : undefined,
-      });
-
-      // Store for later completion
-      if (result.permitted && result.intent) {
-        state.pendingActions.set(result.intent.intentId, result);
-      }
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            permitted: result.permitted,
-            verdict: result.verdict,
-            intentId: result.intent?.intentId,
-            evaluatorId: result.decision?.evaluatorId,
-            reason: result.reason,
-            stats: state.agentContext.stats,
-            note: result.permitted
-              ? `Action PERMITTED. Call complete_action with intent_id="${result.intent.intentId}" when done.`
-              : `Action DENIED: ${result.reason}`,
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Execute failed", e) }], isError: true };
-    }
-  }
+  async (_args) => movedToGateway("execute_with_context")
 );
 
 server.tool(
   "complete_action",
-  "Complete a permitted action and get the full 3-signature proof chain (intent + decision + receipt + policy receipt). Call this after successfully executing the action.",
+  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Complete a permitted action and get the full 3-signature proof chain.",
   {
     intent_id: z.string().describe("Intent ID from execute_with_context result"),
     status: z.enum(["success", "failure", "partial"]).describe("Outcome of the action"),
     summary: z.string().describe("Brief description of what was accomplished"),
   },
-  async (args) => {
-    if (!state.agentContext) {
-      return { content: [{ type: "text" as const, text: 'No agent context. Use create_agent_context first.' }], isError: true };
-    }
-
-    // Find the pending execute result
-    const executeResult = state.pendingActions.get(args.intent_id);
-
-    if (!executeResult) {
-      return { content: [{ type: "text" as const, text: `No pending action found for intent ${args.intent_id}. Was it permitted?` }], isError: true };
-    }
-
-    try {
-      const completed = state.agentContext.complete(executeResult, {
-        status: args.status,
-        summary: args.summary,
-      });
-
-      // Clean up
-      state.pendingActions.delete(args.intent_id);
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            completed: true,
-            receiptId: completed.receipt.receiptId,
-            policyReceiptId: completed.policyReceipt?.receiptId,
-            signatures: {
-              intent: '✓ (agent declared intent)',
-              decision: '✓ (policy engine evaluated)',
-              receipt: '✓ (execution recorded)',
-            },
-            stats: state.agentContext.stats,
-            auditTrail: state.agentContext.auditLog.length + ' entries',
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Complete failed", e) }], isError: true };
-    }
-  }
+  async (_args) => movedToGateway("complete_action")
 );
 
 // ═══════════════════════════════════════
@@ -3667,286 +3470,57 @@ server.tool(
 );
 
 // ═══════════════════════════════════════
-// Proxy Gateway (Enforcement Boundary)
+// Proxy Gateway (moved to gateway product in v3.0.0)
 // ═══════════════════════════════════════
+// ProxyGateway is a product-layer enforcement runtime. The primitives it
+// was built on (delegation verification, policy evaluation, replay nonces)
+// remain in the SDK — rebuild a gateway locally from those, or use the
+// hosted gateway at gateway.aeoess.com.
 
 server.tool(
   "create_gateway",
-  "Create a ProxyGateway enforcement boundary. The gateway validates identity, delegation scope, policy compliance, and provides replay protection for every tool call. Returns gateway ID and public key.",
+  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Create a ProxyGateway enforcement boundary.",
   {
-    gatewayId: z.string().optional().describe("Custom gateway ID (auto-generated if omitted)"),
-    approvalTTLSeconds: z.number().optional().describe("Two-phase approval timeout in seconds (default: 300)"),
-    maxPendingPerAgent: z.number().optional().describe("Max pending approvals per agent (default: 10)"),
+    gatewayId: z.string().optional().describe("Custom gateway ID"),
+    approvalTTLSeconds: z.number().optional().describe("Two-phase approval timeout"),
+    maxPendingPerAgent: z.number().optional().describe("Max pending approvals per agent"),
   },
-  async ({ gatewayId, approvalTTLSeconds, maxPendingPerAgent }) => {
-    const keys = generateKeyPair();
-    const id = gatewayId || `gateway-${Date.now().toString(36)}`;
-
-    if (!state.floor) {
-      return { content: [{ type: "text" as const, text: "Error: Load a Values Floor first (load_values_floor)" }] };
-    }
-
-    const config: GatewayConfig = {
-      gatewayId: id,
-      gatewayPublicKey: keys.publicKey,
-      gatewayPrivateKey: keys.privateKey,
-      floor: state.floor,
-      approvalTTLSeconds: approvalTTLSeconds ?? 300,
-      maxPendingPerAgent: maxPendingPerAgent ?? 10,
-      recheckRevocationOnExecute: true,
-    };
-
-    // Default executor echoes tool calls — real execution is done by MCP client
-    const executor: ToolExecutor = async (tool: string, params: Record<string, unknown>) => {
-      return { success: true, result: { tool, params, executedVia: 'mcp-gateway' } };
-    };
-
-    state.gateway = createProxyGateway(config, executor);
-    state.gatewayKeys = keys;
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          created: true,
-          gatewayId: id,
-          publicKey: keys.publicKey,
-          approvalTTLSeconds: config.approvalTTLSeconds,
-          maxPendingPerAgent: config.maxPendingPerAgent,
-          note: "Gateway ready. Register agents with register_gateway_agent, then process calls with gateway_process_tool_call.",
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "register_gateway_agent",
-  "Register an agent with the gateway. The agent must have a valid passport and floor attestation. Delegations define what scopes the agent can use through the gateway.",
-  {
-    agentId: z.string().describe("Agent ID to register"),
-  },
-  async ({ agentId }) => {
-    if (!state.gateway) {
-      return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
-    }
-    // F-4 fix: check both state.agents AND state.agentContext for agent data
-    let agent = state.agents.get(agentId);
-    if (!agent && state.agentContext && state.agentId === agentId) {
-      // Agent was created via create_agent_context, bridge to gateway
-      const ctx = state.agentContext;
-      agent = {
-        passport: (ctx as any).agent?.passport || (ctx as any).passport,
-        publicKey: state.agentKey!,
-        agentId: state.agentId!,
-        attestation: (ctx as any).agent?.attestation || (ctx as any).attestation,
-      } as any;
-    }
-    if (!agent) {
-      return { content: [{ type: "text" as const, text: `Error: Agent "${agentId}" not found in session. Join social contract or create_agent_context first.` }] };
-    }
-
-    const agentDelegations = Array.from(state.delegations.values()).filter(
-      d => d.delegatedTo === agent.publicKey
-    );
-
-    if (agentDelegations.length === 0) {
-      return { content: [{ type: "text" as const, text: `Error: No delegations found for agent "${agentId}". Create a delegation first.` }] };
-    }
-
-    if (!agent.attestation) {
-      return { content: [{ type: "text" as const, text: `Error: Agent "${agentId}" has no floor attestation. Attest to floor first.` }] };
-    }
-
-    state.gateway.registerAgent(agent.passport, agent.attestation, agentDelegations);
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          registered: true,
-          agentId,
-          delegationCount: agentDelegations.length,
-          scopes: agentDelegations.flatMap(d => d.scope),
-        }, null, 2),
-      }],
-    };
-  }
+  async (_args) => movedToGateway("create_gateway")
 );
 
 server.tool(
   "gateway_process_tool_call",
-  "Process a tool call through the gateway enforcement boundary. Validates identity, delegation, policy, and replay protection in a single atomic operation. Returns execution result with full 3-signature proof chain.",
+  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Process a tool call through the gateway enforcement boundary.",
   {
-    agentId: z.string().describe("ID of the requesting agent"),
-    tool: z.string().describe("Tool name to execute"),
-    params: z.record(z.unknown()).optional().describe("Tool parameters"),
-    scopeRequired: z.string().describe("Delegation scope needed for this tool"),
-    spendAmount: z.number().optional().describe("Spend amount if commerce action"),
-    spendCurrency: z.string().optional().describe("Currency code (e.g. USD)"),
-    context: z.string().optional().describe("Human-readable context for audit"),
+    agentId: z.string(),
+    tool: z.string(),
+    params: z.record(z.unknown()).optional(),
+    scopeRequired: z.string(),
+    spendAmount: z.number().optional(),
+    spendCurrency: z.string().optional(),
+    context: z.string().optional(),
   },
-  async ({ agentId, tool, params, scopeRequired, spendAmount, spendCurrency, context }) => {
-    if (!state.gateway) {
-      return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
-    }
-
-    const agent = state.agents.get(agentId);
-    if (!agent) {
-      return { content: [{ type: "text" as const, text: `Error: Agent "${agentId}" not found in session.` }] };
-    }
-
-    const { canonicalize } = await import("agent-passport-system");
-    const requestId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const payload = canonicalize({ requestId, agentId, tool, params: params || {}, scopeRequired, spend: spendAmount ? { amount: spendAmount, currency: spendCurrency || 'USD' } : undefined });
-
-    const request: ToolCallRequest = {
-      requestId,
-      agentId,
-      agentPublicKey: agent.publicKey,
-      signature: sign(payload, agent.keyPair.privateKey),
-      tool,
-      params: params || {},
-      scopeRequired,
-      spend: spendAmount ? { amount: spendAmount, currency: spendCurrency || 'USD' } : undefined,
-      context,
-    };
-
-    const result = await state.gateway.processToolCall(request);
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          executed: result.executed,
-          requestId: result.requestId,
-          result: result.result ?? undefined,
-          denialReason: result.denialReason ?? undefined,
-          toolError: result.toolError ?? undefined,
-          ...(result.decision && { verdict: result.decision.verdict, reason: result.decision.reason }),
-          ...(result.proof && {
-            proof: {
-              hasRequestSignature: !!result.proof.requestSignature,
-              hasDecisionSignature: !!result.proof.decisionSignature,
-              hasReceiptSignature: !!result.proof.receiptSignature,
-              policyReceiptId: result.proof.policyReceipt?.policyReceiptId,
-            },
-          }),
-          ...(result.receipt && {
-            receipt: {
-              receiptId: result.receipt.receiptId,
-              agentId: result.receipt.agentId,
-              action: result.receipt.action,
-            },
-          }),
-        }, null, 2),
-      }],
-    };
-  }
+  async (_args) => movedToGateway("gateway_process_tool_call")
 );
 
 server.tool(
   "gateway_approve",
-  "Two-phase execution: approve a tool call without executing it. Returns an approval ID that can be executed later with gateway_execute_approval. Useful for human-in-the-loop workflows.",
+  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Two-phase execution: approve a tool call without executing it.",
   {
-    agentId: z.string().describe("ID of the requesting agent"),
-    tool: z.string().describe("Tool name to approve"),
-    params: z.record(z.unknown()).optional().describe("Tool parameters"),
-    scopeRequired: z.string().describe("Delegation scope needed"),
-    context: z.string().optional().describe("Human-readable context"),
+    agentId: z.string(),
+    tool: z.string(),
+    params: z.record(z.unknown()).optional(),
+    scopeRequired: z.string(),
+    context: z.string().optional(),
   },
-  async ({ agentId, tool, params, scopeRequired, context }) => {
-    if (!state.gateway) {
-      return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
-    }
-
-    const agent = state.agents.get(agentId);
-    if (!agent) {
-      return { content: [{ type: "text" as const, text: `Error: Agent "${agentId}" not found in session.` }] };
-    }
-
-    const { canonicalize } = await import("agent-passport-system");
-    const requestId = `mcp-approve-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const payload = canonicalize({ requestId, agentId, tool, params: params || {}, scopeRequired, spend: undefined });
-
-    const request: ToolCallRequest = {
-      requestId,
-      agentId,
-      agentPublicKey: agent.publicKey,
-      signature: sign(payload, agent.keyPair.privateKey),
-      tool,
-      params: params || {},
-      scopeRequired,
-      context,
-    };
-
-    const result = state.gateway.approve(request);
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          approved: result.approved,
-          ...(result.approval && {
-            approvalId: result.approval.approvalId,
-            expiresAt: result.approval.expiresAt,
-            nonce: result.approval.nonce,
-          }),
-          ...(result.denial && { denial: result.denial }),
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "gateway_execute_approval",
-  "Execute a previously approved tool call. Rechecks delegation validity before execution — if delegation was revoked since approval, execution is denied.",
-  {
-    approvalId: z.string().describe("Approval ID from gateway_approve"),
-  },
-  async ({ approvalId }) => {
-    if (!state.gateway) {
-      return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
-    }
-
-    const result = await state.gateway.executeApproval(approvalId);
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          executed: result.executed,
-          requestId: result.requestId,
-          result: result.result ?? undefined,
-          denialReason: result.denialReason ?? undefined,
-          ...(result.proof && {
-            proof: {
-              policyReceiptId: result.proof.policyReceipt?.policyReceiptId,
-            },
-          }),
-        }, null, 2),
-      }],
-    };
-  }
+  async (_args) => movedToGateway("gateway_approve")
 );
 
 server.tool(
   "gateway_stats",
-  "Get gateway statistics: total requests, permits, denials, replay attempts blocked, active agents, and pending approvals.",
+  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Get gateway statistics.",
   {},
-  async () => {
-    if (!state.gateway) {
-      return { content: [{ type: "text" as const, text: "Error: Create gateway first (create_gateway)" }] };
-    }
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify(state.gateway.getStats(), null, 2),
-      }],
-    };
-  }
+  async (_args) => movedToGateway("gateway_stats")
 );
 
 // ═══════════════════════════════════════
@@ -3964,91 +3538,9 @@ async function intentApiFetch(path: string, opts?: RequestInit): Promise<any> {
   return res.json();
 }
 
-server.tool(
-  "publish_intent_card",
-  "Publish an IntentCard to the Intent Network at aeoess.com. Your card is visible to all agents on the network. Cards are Ed25519 signed, scoped, and expire automatically.",
-  {
-    principal_alias: z.string().describe("Human's display name or alias"),
-    needs: z.array(z.object({
-      category: z.string().describe("Category (e.g. 'engineering', 'design', 'funding')"),
-      description: z.string().describe("What is needed"),
-      priority: z.enum(["critical", "high", "medium", "low"]).default("medium"),
-      tags: z.array(z.string()).optional(),
-      budget_amount: z.number().optional(),
-      budget_currency: z.string().optional(),
-    })).optional().describe("What the human needs"),
-    offers: z.array(z.object({
-      category: z.string().describe("Category of what's offered"),
-      description: z.string().describe("What is offered"),
-      priority: z.enum(["critical", "high", "medium", "low"]).default("medium"),
-      tags: z.array(z.string()).optional(),
-      budget_amount: z.number().optional(),
-      budget_currency: z.string().optional(),
-    })).optional().describe("What the human offers"),
-    open_to: z.array(z.string()).optional().describe("Categories open to (e.g. ['introductions', 'partnerships'])"),
-    not_open_to: z.array(z.string()).optional().describe("Categories explicitly not open to"),
-    approval_required: z.array(z.string()).optional().describe("What needs human approval before sharing"),
-    visibility: z.enum(["public", "verified", "minimal"]).default("public"),
-    ttl_hours: z.number().default(24).describe("Hours until card expires"),
-  },
-  async (args) => {
-    recordBehavior('publish_intent_card');
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-
-    const mapItem = (item: any) => ({
-      category: item.category,
-      description: item.description,
-      priority: item.priority || 'medium',
-      tags: item.tags || [],
-      budget: item.budget_amount ? { amount: item.budget_amount, currency: item.budget_currency || 'USD' } : undefined,
-      visibility: 'public' as const,
-    });
-
-    const card = createIntentCard({
-      agentId: state.agentId || 'anonymous',
-      principalAlias: args.principal_alias,
-      publicKey: state.agentKey!,
-      privateKey: state.privateKey!,
-      needs: (args.needs || []).map(mapItem),
-      offers: (args.offers || []).map(mapItem),
-      openTo: args.open_to || [],
-      notOpenTo: args.not_open_to || [],
-      approvalRequired: args.approval_required || [],
-      ttlSeconds: (args.ttl_hours || 24) * 3600,
-    });
-
-    try {
-      const result = await intentApiFetch('/api/cards', {
-        method: 'POST',
-        body: JSON.stringify({ ...card, publicKey: state.agentKey, signature: card.signature }),
-      });
-
-      if (result.error) {
-        return { content: [{ type: "text" as const, text: `Failed to publish: ${result.error}` }], isError: true };
-      }
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            published: true,
-            cardId: result.cardId,
-            agentId: card.agentId,
-            principalAlias: card.principalAlias,
-            needs: card.needs.length,
-            offers: card.offers.length,
-            expiresAt: result.expiresAt,
-            networkSize: result.networkSize,
-            note: 'Card published to Intent Network (api.aeoess.com). Other agents worldwide can now discover matches.',
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
-    }
-  }
-);
+// publish_intent_card removed in v3.0.0: createIntentCard was gateway-side
+// signing glue. Cards are still publishable directly via the Intent Network
+// REST API at api.aeoess.com/api/cards — sign with your agent private key.
 
 server.tool(
   "search_matches",
@@ -4136,7 +3628,7 @@ server.tool(
               message: intro.message,
               status: intro.status,
             })),
-            note: !digest.hasCard ? 'No card published yet. Use publish_intent_card to join the network.' : undefined,
+            note: !digest.hasCard ? 'No card published yet. POST to api.aeoess.com/api/cards to join the network (publish_intent_card tool removed in v3.0.0).' : undefined,
           }, null, 2),
         }],
       };
@@ -4506,80 +3998,13 @@ server.tool(
   }
 );
 
-server.tool(
-  "create_attestation",
-  "Create a contextual attestation — pre-action reasoning record for medium+ risk actions.",
-  {
-    action_id: z.string(), delegation_ref: z.string(),
-    context_understanding: z.string().describe("Agent's assessment of the situation"),
-    factors_considered: z.array(z.string()).describe("Key decision factors"),
-    alternatives_rejected: z.array(z.object({ alternative: z.string(), reason: z.string() })).default([]),
-    expected_outcome: z.string(),
-    confidence: z.number().min(0).max(1),
-    semantic_uncertainty: z.enum(["low", "medium", "high", "critical"]),
-    required: z.boolean().default(true),
-    valid_until: z.string(), trust_epoch: z.number().default(1),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const ctx = createPolicyContext({
-        policy_version: "2.0.0", values_floor_version: "1.0.0",
-        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
-        valid_until: args.valid_until,
-      });
-      const att = createV2Attestation({
-        action_id: args.action_id, agent_id: state.agentKey!,
-        delegation_ref: args.delegation_ref,
-        context_understanding: args.context_understanding,
-        factors_considered: args.factors_considered,
-        alternatives_rejected: args.alternatives_rejected,
-        expected_outcome: args.expected_outcome,
-        confidence: args.confidence,
-        semantic_uncertainty: args.semantic_uncertainty as any,
-        required: args.required, policy_context: ctx,
-        agent_private_key: state.privateKey!,
-      });
-      const quality = assessV2AttestationQuality(att);
-      return { content: [{ type: "text" as const, text: JSON.stringify({ attestation: att, quality }, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Attestation failed", e) }], isError: true };
-    }
-  }
-);
+// create_attestation (contextual attestation lifecycle) removed in v3.0.0:
+// createV2Attestation / getV2AgentAttestationQualityAvg / clearV2AttestationStore
+// were gateway-side lifecycle helpers. The primitive assessV2AttestationQuality
+// remains in the SDK for direct use.
 
-server.tool(
-  "request_migration",
-  "Request fork-and-sunset migration when current delegation scope is insufficient.",
-  {
-    source_delegation: z.string(),
-    limitation: z.string().describe("What the agent cannot do under current scope"),
-    requested_scope_change: z.string(),
-    justification: z.string(),
-    valid_until: z.string(), trust_epoch: z.number().default(1),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const ctx = createPolicyContext({
-        policy_version: "2.0.0", values_floor_version: "1.0.0",
-        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
-        valid_until: args.valid_until,
-      });
-      const req = requestV2Migration({
-        source_agent: state.agentKey!, source_delegation: args.source_delegation,
-        limitation: args.limitation, requested_scope_change: args.requested_scope_change,
-        justification: args.justification, agent_private_key: state.privateKey!,
-        policy_context: ctx,
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify(req, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Migration request failed", e) }], isError: true };
-    }
-  }
-);
+// request_migration removed in v3.0.0: requestV2Migration / approveV2Migration /
+// executeV2Migration were gateway-side migration orchestration.
 
 server.tool(
   "create_artifact_provenance",
@@ -4617,42 +4042,10 @@ server.tool(
   }
 );
 
-server.tool(
-  "check_anomaly",
-  "Record an action and check for anomalies (first-max-authority, concentration).",
-  {
-    action_id: z.string(), authority_level: z.number(),
-    semantic_uncertainty: z.enum(["low", "medium", "high", "critical"]),
-    risk_class: z.enum(["low", "medium", "high", "critical"]),
-    delegation_ref: z.string(),
-    was_delegated: z.boolean().default(false),
-    complexity: z.number().min(0).max(1).default(0.5),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const record = {
-        action_id: args.action_id, agent_id: state.agentKey!,
-        authority_level: args.authority_level,
-        semantic_uncertainty: args.semantic_uncertainty as any,
-        risk_class: args.risk_class as any,
-        delegation_ref: args.delegation_ref,
-        was_delegated: args.was_delegated,
-        complexity: args.complexity,
-        timestamp: new Date().toISOString(),
-      };
-      recordV2Action(record);
-      const anomaly = checkV2FirstMaxAuthority(record);
-      const concentration = computeV2ConcentrationMetrics(state.agentKey!);
-      return { content: [{ type: "text" as const, text: JSON.stringify({
-        action_recorded: true, anomaly_flag: anomaly, concentration,
-      }, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Anomaly check failed", e) }], isError: true };
-    }
-  }
-);
+// check_anomaly removed in v3.0.0: anomaly detection is a cross-session
+// product capability (recordV2Action / checkV2FirstMaxAuthority /
+// computeV2ConcentrationMetrics). The gateway maintains the per-agent action
+// history; MCP tools operate per-session and cannot supply meaningful trends.
 
 // ═══════════════════════════════════════
 // Data Governance Tools (Modules 36A, 38, 39)
@@ -4706,60 +4099,16 @@ server.tool(
 
 server.tool(
   "create_data_enforcement_gate",
-  "Create a data enforcement gate that checks terms before allowing data access. Modes: enforce (block violations), audit (log only), off.",
+  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Create a data enforcement gate that checks terms before allowing data access.",
   {
     mode: z.enum(["enforce", "audit", "off"]).default("enforce").describe("Enforcement mode"),
   },
-  async (p) => {
-    const kp = generateKeyPair();
-    state.dataEnforcementGate = new DataEnforcementGate({
-      gatewayId: 'gw_data_' + Date.now().toString(36),
-      gatewayPublicKey: kp.publicKey,
-      gatewayPrivateKey: kp.privateKey,
-      mode: p.mode,
-    }, state.contributionLedger);
-    // Register all known sources
-    for (const [id, receipt] of state.sourceReceipts) {
-      state.dataEnforcementGate.registerSource(receipt, receipt.contentDescriptor);
-    }
-    return { content: [{ type: "text", text: `✅ Data enforcement gate created.\n\nMode: ${p.mode}\nRegistered sources: ${state.sourceReceipts.size}\nContribution ledger: active` }] };
-  }
-);
-
-server.tool(
-  "check_data_access",
-  "Check if an agent can access a data source through the enforcement gate. Generates receipt and feeds contribution ledger.",
-  {
-    sourceReceiptId: z.string().describe("Source receipt ID to access"),
-    declaredPurpose: z.enum(["read", "analyze", "summarize", "generate", "recommend", "train", "embed", "redistribute", "commercial"]).describe("Declared purpose"),
-    accessMethod: z.enum(["api_call", "file_read", "database_query", "web_fetch", "memory_retrieval", "embedding_lookup", "stream", "human_provided"]).default("api_call"),
-  },
-  async (p) => {
-    if (!state.dataEnforcementGate) return { content: [{ type: "text", text: "❌ No enforcement gate. Call create_data_enforcement_gate first." }] };
-    if (!state.agentKey) return { content: [{ type: "text", text: "❌ Not identified." }] };
-    const decision = state.dataEnforcementGate.checkAccess({
-      agentId: state.agentId || 'unknown',
-      agentPublicKey: state.agentKey,
-      principalId: state.principal?.principalId || 'unknown',
-      sourceReceiptId: p.sourceReceiptId,
-      declaredPurpose: p.declaredPurpose,
-      accessMethod: p.accessMethod,
-      accessScope: 'data:' + p.declaredPurpose,
-      executionFrameId: 'frame_' + Date.now().toString(36),
-    });
-    const status = decision.allowed ? '✅ Access ALLOWED' : '❌ Access DENIED';
-    let text = `${status}\n\nSource: ${p.sourceReceiptId}\nPurpose: ${p.declaredPurpose}`;
-    if (decision.hardViolations.length) text += `\nViolations: ${decision.hardViolations.join('; ')}`;
-    if (decision.advisoryWarnings.length) text += `\nWarnings: ${decision.advisoryWarnings.join('; ')}`;
-    if (decision.receipt) text += `\nReceipt ID: ${decision.receipt.accessReceiptId}`;
-    if (decision.accessesRemaining !== undefined) text += `\nAccesses remaining: ${decision.accessesRemaining}`;
-    return { content: [{ type: "text", text }] };
-  }
+  async (_args) => movedToGateway("create_data_enforcement_gate")
 );
 
 server.tool(
   "query_contributions",
-  "Query the data contribution ledger. Filter by source, agent, principal, purpose, or time range.",
+  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Query the data contribution ledger.",
   {
     sourceReceiptId: z.string().optional(),
     agentId: z.string().optional(),
@@ -4767,138 +4116,30 @@ server.tool(
     purpose: z.string().optional(),
     minAccessCount: z.number().optional(),
   },
-  async (p) => {
-    const records = queryContributions(state.contributionLedger, p);
-    if (records.length === 0) return { content: [{ type: "text", text: "No contributions found matching query." }] };
-    const lines = records.map(r =>
-      `• ${r.sourceDescriptor || r.sourceReceiptId}: ${r.accessCount} accesses by ${r.agentId}, purposes: ${r.purposes.join('/')}, owed: $${r.compensationAccrued.totalOwed.toFixed(4)}`
-    );
-    return { content: [{ type: "text", text: `📊 ${records.length} contribution records:\n\n${lines.join('\n')}` }] };
-  }
-);
-
-server.tool(
-  "get_source_metrics",
-  "Get aggregate metrics for a data source: total accesses, unique agents, compensation owed.",
-  {
-    sourceReceiptId: z.string().describe("Source receipt ID"),
-  },
-  async (p) => {
-    const metrics = getSourceMetrics(state.contributionLedger, p.sourceReceiptId);
-    if (!metrics) return { content: [{ type: "text", text: "No data found for this source." }] };
-    return { content: [{ type: "text", text: `📊 Source Metrics: ${metrics.sourceDescriptor}\n\nTotal accesses: ${metrics.totalAccesses}\nUnique agents: ${metrics.uniqueAgents}\nUnique principals: ${metrics.uniquePrincipals}\nCompensation owed: $${metrics.compensationOwed.totalOwed.toFixed(4)} ${metrics.compensationOwed.currency}\nPurpose breakdown: ${JSON.stringify(metrics.purposeBreakdown)}\nTop agents: ${metrics.topAgents.map(a => `${a.agentId} (${a.accessCount})`).join(', ')}` }] };
-  }
-);
-
-server.tool(
-  "get_agent_data_footprint",
-  "Show every data source an agent has accessed, with compensation status.",
-  {
-    agentId: z.string().describe("Agent ID to check"),
-  },
-  async (p) => {
-    const footprint = getAgentDataFootprint(state.contributionLedger, p.agentId);
-    if (!footprint) return { content: [{ type: "text", text: "No data access found for this agent." }] };
-    const sources = footprint.sourcesAccessed.map(s =>
-      `• ${s.sourceDescriptor || s.sourceReceiptId}: ${s.accessCount} accesses, purposes: ${s.purposes.join('/')}, status: ${s.compensationStatus}`
-    );
-    return { content: [{ type: "text", text: `🔍 Agent Data Footprint: ${p.agentId}\n\nTotal sources: ${footprint.totalSources}\nTotal accesses: ${footprint.totalAccesses}\nTotal compensation accrued: $${footprint.totalCompensationAccrued.toFixed(4)} ${footprint.currency}\n\nSources:\n${sources.join('\n')}` }] };
-  }
+  async (_args) => movedToGateway("query_contributions")
 );
 
 server.tool(
   "generate_settlement",
-  "Generate a Merkle-committed, signed settlement record for a period. Shows what's owed to each data source.",
+  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Generate a Merkle-committed, signed settlement record for a period.",
   {
     startDate: z.string().describe("Period start (YYYY-MM-DD)"),
     endDate: z.string().describe("Period end (YYYY-MM-DD)"),
     periodLabel: z.string().describe("Label (e.g. '2026-Q1', '2026-03')"),
   },
-  async (p) => {
-    const kp = generateKeyPair();
-    const settlement = generateSettlement(
-      state.contributionLedger,
-      { startDate: p.startDate, endDate: p.endDate, periodLabel: p.periodLabel },
-      kp.publicKey, kp.privateKey,
-    );
-    const verification = verifySettlement(settlement);
-    const lines = settlement.lineItems.map(li =>
-      `• ${li.sourceDescriptor || li.sourceReceiptId}: ${li.accessCount} accesses, $${li.amount.toFixed(4)} (${li.compensationModel})`
-    );
-    return { content: [{ type: "text", text: `📋 Settlement Record: ${settlement.settlementId}\n\nPeriod: ${p.periodLabel}\nTotal: $${settlement.totalAmount.toFixed(4)} ${settlement.currency}\nTotal accesses: ${settlement.totalAccesses}\nUnique sources: ${settlement.uniqueSources}\nUnique payers: ${settlement.uniquePayers}\nMerkle root: ${settlement.merkleRoot.slice(0, 16)}...\nVerification: ${verification.valid ? '✅ VALID' : '❌ INVALID'}\n\nLine items:\n${lines.join('\n')}` }] };
-  }
+  async (_args) => movedToGateway("generate_settlement")
 );
 
-server.tool(
-  "generate_compliance_report",
-  "Generate a GDPR Article 30 / EU AI Act Article 10 / SOC 2 compliance report.",
-  {
-    reportType: z.enum(["gdpr_article30", "euai_article10", "soc2_data", "general"]).describe("Report type"),
-    startDate: z.string().describe("Period start"),
-    endDate: z.string().describe("Period end"),
-    periodLabel: z.string().describe("Label"),
-    agentId: z.string().optional().describe("Filter by agent"),
-    principalId: z.string().optional().describe("Filter by principal"),
-  },
-  async (p) => {
-    const kp = generateKeyPair();
-    const report = generateDataComplianceReport(
-      state.contributionLedger,
-      { startDate: p.startDate, endDate: p.endDate, periodLabel: p.periodLabel },
-      p.reportType, kp.privateKey,
-      { agentId: p.agentId, principalId: p.principalId },
-    );
-    return { content: [{ type: "text", text: `📋 Compliance Report: ${report.reportId}\n\nType: ${p.reportType}\nPeriod: ${p.periodLabel}\nTotal data accesses: ${report.summary.totalDataAccesses}\nUnique data sources: ${report.summary.uniqueDataSources}\nPurpose breakdown: ${JSON.stringify(report.summary.purposeBreakdown)}\nCompensation: $${report.summary.compensationSummary.total.toFixed(4)} (pending: $${report.summary.compensationSummary.pending.toFixed(4)})\nTerms violations: ${report.summary.termsViolations}\nAdvisory warnings: ${report.summary.advisoryWarnings}\nSigned: ✅` }] };
-  }
-);
-
-server.tool(
-  "record_training_use",
-  "Record that agent output derived from data sources was used for training/fine-tuning/embedding. Creates a signed training attribution receipt.",
-  {
-    trainingUseType: z.enum(["fine_tune", "lora_adapter", "embedding", "rag_index", "distillation", "evaluation", "synthetic_data"]).describe("Type of training use"),
-    modelId: z.string().describe("Model being trained"),
-    sourceAccessReceiptIds: z.array(z.string()).describe("Access receipt IDs of source data used"),
-    outputContentHash: z.string().describe("SHA-256 of the output used for training"),
-    contributionWeights: z.record(z.number()).optional().describe("Fractional weights per source (sum to 1.0)"),
-    datasetSize: z.number().optional().describe("Number of training examples"),
-  },
-  async (p) => {
-    if (!state.agentKey || !state.privateKey) return { content: [{ type: "text", text: "❌ Not identified." }] };
-    const receipt = createTrainingAttribution({
-      trainingUseType: p.trainingUseType,
-      modelId: p.modelId,
-      trainerId: state.agentId || 'unknown',
-      trainerPublicKey: state.agentKey,
-      trainerPrivateKey: state.privateKey,
-      sourceAccessReceiptIds: p.sourceAccessReceiptIds,
-      executionFrameId: 'frame_train_' + Date.now().toString(36),
-      outputContentHash: p.outputContentHash,
-      inputDataHashes: p.sourceAccessReceiptIds.map(id => id), // simplified
-      contributionWeights: p.contributionWeights,
-      datasetSize: p.datasetSize,
-    });
-    recordTrainingAttribution(state.trainingLedger, receipt);
-    const v = verifyTrainingAttribution(receipt);
-    return { content: [{ type: "text", text: `✅ Training attribution recorded.\n\nReceipt: ${receipt.trainingReceiptId}\nType: ${p.trainingUseType}\nModel: ${p.modelId}\nSources: ${p.sourceAccessReceiptIds.length}\nDataset size: ${p.datasetSize || 'N/A'}\nWeights: ${p.contributionWeights ? JSON.stringify(p.contributionWeights) : 'equal'}\nVerification: ${v.valid ? '✅' : '❌'}` }] };
-  }
-);
-
-server.tool(
-  "get_model_data_sources",
-  "Show which data sources contributed to a model's training, with fractional weights.",
-  {
-    modelId: z.string().describe("Model ID to check"),
-  },
-  async (p) => {
-    const sources = getModelDataSources(state.trainingLedger, p.modelId);
-    if (sources.length === 0) return { content: [{ type: "text", text: "No training data found for this model." }] };
-    const lines = sources.map(s =>
-      `• ${s.accessReceiptId}: weight ${s.weight.toFixed(4)}, type: ${s.trainingUseType}`
-    );
-    return { content: [{ type: "text", text: `🧠 Model Training Sources: ${p.modelId}\n\n${sources.length} data sources contributed:\n${lines.join('\n')}` }] };
-  }
-);
+// Removed in v3.0.0 (moved to gateway product — no stub to keep tool count bounded):
+//   check_data_access         (DataEnforcementGate.checkAccess)
+//   get_source_metrics        (cross-agent ledger aggregation)
+//   get_agent_data_footprint  (cross-agent ledger aggregation)
+//   generate_compliance_report (generateDataComplianceReport)
+//   record_training_use       (createTrainingAttribution + ledger)
+//   get_model_data_sources    (training ledger aggregation)
+// All of these required ContributionLedger / TrainingAttributionLedger
+// (ledger classes are gateway-product). The underlying primitives
+// (access receipts, settlement signing) remain in the SDK at aps_* tools.
 
 
 
