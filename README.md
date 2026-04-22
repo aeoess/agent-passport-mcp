@@ -12,13 +12,13 @@ Enforcement and accountability layer for AI agents. Bring your own identity. 20 
 APS_PROFILE=essential npx agent-passport-system-mcp
 ```
 
-`essential` is the default profile — the 20 tools 90% of integrations need. Set `APS_PROFILE=full` for all 142 tools.
+`essential` is the default profile — the 20 tools 90% of integrations need. Set `APS_PROFILE=full` for all 146 tools.
 
 Available profiles: essential (default), identity, governance, coordination, commerce, data, gateway, comms, minimal, full.
 
 > **For AI agents:** visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. MCP discovery: [.well-known/mcp.json](https://aeoess.com/.well-known/mcp.json).
 
-Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Full surface area under `APS_PROFILE=full`: 142 tools across 124 modules (84 core + 39 v2 constitutional governance). Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172).
+Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Full surface area under `APS_PROFILE=full`: 146 tools across 125 modules (84 core + 39 v2 constitutional governance). Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172).
 
 ## Quick Start
 
@@ -216,8 +216,8 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v2.1.0, 2366 tests)
-- Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v2.1.0)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v2.2.0, 2395 tests)
+- Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v2.2.0)
 - Paper (Protocol): [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Paper (Faceted Narrowing): [doi.org/10.5281/zenodo.19260073](https://doi.org/10.5281/zenodo.19260073)
 - Paper (Behavioral Derivation Rights): [doi.org/10.5281/zenodo.19476002](https://doi.org/10.5281/zenodo.19476002)

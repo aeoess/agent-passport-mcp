@@ -1,8 +1,8 @@
 {
   "name": "agent-passport-system-mcp",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
-  "description": "MCP server for the Agent Passport System — protocol-layer tools only. 142 tools (132 protocol + 10 gateway deprecation stubs). Identity, delegation, reputation, attestation, coordination, commerce, attribution primitive, attribution settlement. Tracks SDK v2.1.0. For gateway-runtime tools (ProxyGateway, AgentContext, DataEnforcementGate), use gateway.aeoess.com REST API or pin to v3.0.0.",
+  "description": "MCP server for the Agent Passport System \u2014 protocol-layer tools only. 146 tools (132 protocol + 10 gateway deprecation stubs). Identity, delegation, reputation, attestation, coordination, commerce, attribution primitive, attribution settlement. Tracks SDK v2.2.0. For gateway-runtime tools (ProxyGateway, AgentContext, DataEnforcementGate), use gateway.aeoess.com REST API or pin to v3.1.0.",
   "type": "module",
   "bin": {
     "agent-passport-system-mcp": "./build/bin.js",
@@ -19,7 +19,7 @@
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepublishOnly": "npm run build && npm test",
-    "postinstall": "echo '\\n🔑 Agent Passport MCP installed! Run: npx agent-passport-system-mcp setup\\n   Or for zero-install remote: npx agent-passport-system-mcp setup --remote\\n'",
+    "postinstall": "echo '\\n\ud83d\udd11 Agent Passport MCP installed! Run: npx agent-passport-system-mcp setup\\n   Or for zero-install remote: npx agent-passport-system-mcp setup --remote\\n'",
     "postpublish": "cd ~/aeoess_web && node scripts/propagate.mjs --apply --commit 2>/dev/null || echo 'Propagation skipped (aeoess_web not found)'"
   },
   "keywords": [
@@ -50,7 +50,7 @@
   "homepage": "https://github.com/aeoess/agent-passport-mcp",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "agent-passport-system": "^2.0.0-beta.0",
+    "agent-passport-system": "^2.2.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

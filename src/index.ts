@@ -204,6 +204,25 @@ import type {
 } from "agent-passport-system";
 
 // ═══════════════════════════════════════
+// Mutual Authentication v1 (SDK v2.2.0)
+// ═══════════════════════════════════════
+import {
+  buildCertificate, signCertificate, certificateId,
+  verifyCertificateSignature, isCertificateTemporallyValid, checkAnchor,
+  buildBundle, signBundle, verifyBundle,
+  newNonce, buildHello, chooseVersion,
+  buildAttest, verifyAttest, deriveSession, isSessionActive,
+} from "agent-passport-system";
+
+import type {
+  MutualAuthCertificate, MutualAuthHello, MutualAuthAttest,
+  MutualAuthSession, MutualAuthResult, MutualAuthPolicy,
+  MutualAuthFailureReason, TrustAnchor, TrustAnchorBundle,
+  BuildCertificateInput,
+} from "agent-passport-system";
+
+
+// ═══════════════════════════════════════
 // State Management
 // ═══════════════════════════════════════
 
@@ -5602,6 +5621,142 @@ server.tool(
     }
   }
 );
+
+// ═══════════════════════════════════════
+// Mutual Authentication v1 tools (SDK v2.2.0)
+// ═══════════════════════════════════════
+
+server.tool(
+  "mutualAuthBuildCertificate",
+  "Build and sign a mutual-auth certificate identifying an agent or information system. Returns the signed MutualAuthCertificate object ready to carry into a handshake. The issuer's Ed25519 private key (hex) signs over the canonical (JCS) form.",
+  {
+    role: z.enum(["agent", "information_system"]).describe("Role of the subject this cert identifies"),
+    subject_id: z.string().describe("Stable subject identifier (e.g., agent DID, IS endpoint URL)"),
+    subject_pubkey_hex: z.string().describe("Ed25519 public key (hex) of the subject"),
+    issuer_id: z.string().describe("Issuer identifier"),
+    issuer_role: z.enum(["agent", "information_system", "trust_anchor"]).describe("Role of the issuer"),
+    issuer_pubkey_hex: z.string().describe("Ed25519 public key (hex) of the issuer"),
+    issuer_privkey_hex: z.string().describe("Ed25519 private key (hex) of the issuer — used to sign"),
+    binding: z.string().describe("For an agent: the APS agent_id. For an IS: the resource domain (e.g., mcp://api.bank.com)"),
+    not_before: z.number().describe("Earliest valid time (unix ms)"),
+    not_after: z.number().describe("Latest valid time (unix ms)"),
+    supported_versions: z.array(z.string()).describe("Protocol versions supported, highest first (e.g., ['1.0'])"),
+    attestation_grade: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional().describe("For agents: APS attestation grade 0-3"),
+    capabilities: z.array(z.string()).optional().describe("Optional capability tags"),
+  },
+  async (args) => {
+    try {
+      const unsigned = buildCertificate(
+        {
+          role: args.role,
+          subject_id: args.subject_id,
+          subject_pubkey_hex: args.subject_pubkey_hex,
+          issuer_id: args.issuer_id,
+          issuer_role: args.issuer_role,
+          binding: args.binding,
+          not_before: args.not_before,
+          not_after: args.not_after,
+          supported_versions: args.supported_versions,
+          attestation_grade: args.attestation_grade,
+          capabilities: args.capabilities,
+        },
+        args.issuer_pubkey_hex,
+      );
+      const cert = signCertificate(unsigned, args.issuer_privkey_hex);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({
+          certificate: cert,
+          certificate_id: certificateId(cert),
+        }, null, 2) }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("mutualAuthBuildCertificate failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "mutualAuthVerifyAttest",
+  "Verify a MutualAuthAttest against policy and trust anchors. Runs all 10 verification checks: signature, version negotiation, nonce match, timestamp freshness, certificate validity, issuer anchor check, binding constraints, downgrade detection, attestation grade policy, capability policy. Returns ok:true on success or a failure reason on rejection.",
+  {
+    attest: z.any().describe("MutualAuthAttest to verify"),
+    expected_peer_nonce_b64: z.string().describe("The nonce the peer sent in their prior hello or attest"),
+    expected_own_nonce_b64: z.string().describe("The nonce we sent in our own prior hello or attest"),
+    policy: z.any().describe("MutualAuthPolicy (accepted_versions, min_agent_grade, required_capabilities, max_clock_skew_ms, max_session_ms)"),
+    trust_anchors: z.array(z.any()).describe("TrustAnchor[] — local trusted roots"),
+    revoked_anchor_ids: z.array(z.string()).optional().describe("IDs of anchors revoked since the bundle was issued"),
+    now_ms: z.number().optional().describe("Current unix ms — defaults to Date.now()"),
+  },
+  async (args) => {
+    try {
+      const res = verifyAttest({
+        attest: args.attest as MutualAuthAttest,
+        expected_peer_nonce_b64: args.expected_peer_nonce_b64,
+        expected_own_nonce_b64: args.expected_own_nonce_b64,
+        policy: args.policy as MutualAuthPolicy,
+        trust_anchors: args.trust_anchors as TrustAnchor[],
+        revoked_anchor_ids: args.revoked_anchor_ids,
+        now_ms: args.now_ms ?? Date.now(),
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("mutualAuthVerifyAttest failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "mutualAuthDeriveSession",
+  "Derive the shared mutual-auth session record from both sides' Attests. Both parties MUST compute identical session_id given identical inputs (canonical JCS + sha256 of chosen_version, both cert ids, both nonces). Returns a MutualAuthSession with session_id + both certificates + expiry bounds, or failure reason.",
+  {
+    agent_attest: z.any().describe("The agent's MutualAuthAttest"),
+    is_attest: z.any().describe("The information system's MutualAuthAttest"),
+    policy: z.any().describe("MutualAuthPolicy"),
+    now_ms: z.number().optional().describe("Current unix ms — defaults to Date.now()"),
+  },
+  async (args) => {
+    try {
+      const res = deriveSession(
+        args.agent_attest as MutualAuthAttest,
+        args.is_attest as MutualAuthAttest,
+        args.policy as MutualAuthPolicy,
+        args.now_ms ?? Date.now(),
+      );
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("mutualAuthDeriveSession failed", e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "mutualAuthVerifyTrustBundle",
+  "Verify a TrustAnchorBundle signature and freshness. Caller supplies the list of trusted publisher public keys (root configuration). Returns ok:true on success or failure reason (untrusted_publisher, signature_invalid, bundle_expired, not_yet_valid).",
+  {
+    bundle: z.any().describe("TrustAnchorBundle to verify"),
+    trusted_publisher_pubkeys_hex: z.array(z.string()).describe("List of Ed25519 pubkeys (hex) authorized to publish bundles"),
+    now_ms: z.number().optional().describe("Current unix ms — defaults to Date.now()"),
+  },
+  async (args) => {
+    try {
+      const res = verifyBundle(
+        args.bundle as TrustAnchorBundle,
+        args.trusted_publisher_pubkeys_hex,
+        args.now_ms ?? Date.now(),
+      );
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }],
+      };
+    } catch (e: any) {
+      return { content: [{ type: "text" as const, text: safeError("mutualAuthVerifyTrustBundle failed", e) }], isError: true };
+    }
+  }
+);
+
 
 server.prompt(
   "coordination_role",
