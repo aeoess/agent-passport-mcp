@@ -1,0 +1,24 @@
+# agent-passport-system-mcp
+
+> Model Context Protocol server exposing every APS protocol primitive as an MCP tool. LLM-facing agents call these tools to issue passports, build delegations, verify receipts, evaluate governance, compose identity chains. Apache-2.0.
+
+This is a 1:1 adapter on top of the `agent-passport-system` SDK. If it is in the SDK public API, it is a tool here.
+
+## Install
+
+- npm: `npm install agent-passport-system-mcp`
+- Use as an MCP server via stdio transport in any MCP-compatible client
+
+## Canonical references
+
+- [README.md](README.md): install and tool list
+- [AGENTS.md](AGENTS.md): instructions for AI coding agents working on this repo
+- [CLAUDE.md](CLAUDE.md): pointer to AGENTS.md for Claude Code
+
+## Related projects
+
+- SDK: https://github.com/aeoess/agent-passport-system
+- Python SDK: https://github.com/aeoess/agent-passport-python
+- Remote MCP: https://github.com/aeoess/agent-passport-remote-mcp (Railway-deployed, mcp.aeoess.com)
+- Website: https://aeoess.com
+- Full project reference: https://aeoess.com/llms-full.txt
