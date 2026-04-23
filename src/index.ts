@@ -221,6 +221,36 @@ import type {
   BuildCertificateInput,
 } from "agent-passport-system";
 
+// ═══════════════════════════════════════
+// Capability Token v0.1 (reference implementation)
+// Spec: agent-passport-system/docs/CAPABILITY-TOKEN-SPEC-DRAFT.md
+// ═══════════════════════════════════════
+import {
+  issueSinkChallenge as issueCapabilitySinkChallenge,
+  buildEvaluationRequest as buildCapabilityEvaluationRequest,
+  mintChallengeReceipt as mintCapabilityChallengeReceipt,
+  signEffectReceipt as signCapabilityEffectReceipt,
+  InMemoryNullifierSet,
+  verifyChallengeReceipt as verifyCapabilityChallengeReceipt,
+  challengeHash as capabilityChallengeHash,
+} from "./capabilityToken/index.js";
+
+import type {
+  SinkChallenge as CapabilitySinkChallenge,
+  AuthorityEvaluationRequest as CapabilityEvaluationRequest,
+  ChallengeReceipt as CapabilityChallengeReceipt,
+  KeyPair as CapabilityKeyPair,
+  SinkAction as CapabilitySinkAction,
+  AuthorityTokenReveal as CapabilityTokenReveal,
+  FreshnessBeacon as CapabilityFreshnessBeacon,
+  DelegationEnvelope as CapabilityDelegationEnvelope,
+  SinkEffect as CapabilitySinkEffect,
+  Decision as CapabilityDecision,
+} from "./capabilityToken/index.js";
+
+// One nullifier set per MCP process. v0.1: in-memory, no persistence.
+const capabilityNullifierSet = new InMemoryNullifierSet();
+
 
 // ═══════════════════════════════════════
 // State Management
@@ -911,6 +941,11 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
   'aps_aggregate_settlement': 'settlement',
   'aps_verify_settlement': 'settlement',
   'aps_build_contributor_query': 'settlement',
+  // Capability Token v0.1 (reference impl) — new 'capability' scope
+  'aps_capability_issue_challenge': 'capability',
+  'aps_capability_evaluate_authority': 'capability',
+  'aps_capability_mint_receipt': 'capability',
+  'aps_capability_sign_effect': 'capability',
 };
 
 // ═══════════════════════════════════════
@@ -5757,6 +5792,207 @@ server.tool(
   }
 );
 
+
+// ═══════════════════════════════════════════════════════════════
+// Capability Token v0.1 — reference implementation tools
+// Spec: agent-passport-system/docs/CAPABILITY-TOKEN-SPEC-DRAFT.md
+// Namespace: aps.capability.v1.* (the protocol message type strings).
+// Tool names use snake_case per MCP convention.
+//
+// MCP is APS-aware by construction — tools are sinks. These four tools
+// expose the four protocol roles (sink, subject, gateway) so any caller
+// can drive the cycle end-to-end against this single process.
+// ═══════════════════════════════════════════════════════════════
+
+server.tool(
+  "aps_capability_issue_challenge",
+  "v0.1 capability-token sink challenge (M1). Sink issues a signed canonical action statement. Returns the SinkChallenge and its challenge_hash. Used to bind the gateway's later policy evaluation to a specific action the sink authored. Search keywords: capability token, sink challenge, M1.",
+  {
+    sink_id: z.string().describe("DID of the sink issuing the challenge"),
+    subject_id: z.string().describe("DID of the subject the challenge is addressed to"),
+    action: z.object({
+      kind: z.string(),
+      target: z.string(),
+      parameters: z.record(z.any()),
+      resource_version: z.string(),
+    }).describe("Canonical action statement"),
+    sink_private_key: z.string().describe("Sink Ed25519 private key (hex)"),
+    sink_public_key: z.string().describe("Sink Ed25519 public key (hex)"),
+    validity_seconds: z.number().int().positive().optional(),
+    required_policy_freshness: z.object({
+      max_age_seconds: z.number().int().nonnegative(),
+      beacon_hash_required: z.boolean(),
+    }).optional(),
+  },
+  async (args) => {
+    try {
+      const sinkKey: CapabilityKeyPair = {
+        publicKey: args.sink_public_key,
+        privateKey: args.sink_private_key,
+      };
+      const challenge = issueCapabilitySinkChallenge({
+        sink_id: args.sink_id,
+        subject_id: args.subject_id,
+        action: args.action as CapabilitySinkAction,
+        validity_seconds: args.validity_seconds,
+        required_policy_freshness: args.required_policy_freshness,
+        sink_key: sinkKey,
+      });
+      const hash = capabilityChallengeHash(challenge);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ challenge, challenge_hash: hash }, null, 2),
+        }],
+      };
+    } catch (e: unknown) {
+      return { content: [{ type: "text" as const, text: safeError("aps_capability_issue_challenge failed", e) }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "aps_capability_evaluate_authority",
+  "v0.1 capability-token authority evaluation request (M2). Subject signs a request carrying the sink's M1, the delegation chain, and a revealed authority-token preimage. The gateway consumes this to decide permit/deny. Search keywords: capability token, authority evaluation, M2.",
+  {
+    challenge: z.any().describe("SinkChallenge object from M1"),
+    delegation_chain: z.array(z.any()).describe("v2.x delegation envelopes"),
+    authority_token: z.object({
+      token_preimage: z.string(),
+      merkle_proof: z.array(z.string()),
+      scope_class: z.string(),
+    }),
+    freshness_beacon: z.object({
+      delegator_id: z.string(),
+      beacon_timestamp: z.string(),
+      beacon_signature: z.string(),
+    }),
+    subject_private_key: z.string().describe("Subject Ed25519 private key (hex)"),
+    subject_public_key: z.string().describe("Subject Ed25519 public key (hex)"),
+    delegation_chain_root: z.string().optional().describe("Override; otherwise computed from chain"),
+  },
+  async (args) => {
+    try {
+      const subjectKey: CapabilityKeyPair = {
+        publicKey: args.subject_public_key,
+        privateKey: args.subject_private_key,
+      };
+      const request = buildCapabilityEvaluationRequest({
+        challenge: args.challenge as CapabilitySinkChallenge,
+        delegation_chain: args.delegation_chain as CapabilityDelegationEnvelope[],
+        authority_token: args.authority_token as CapabilityTokenReveal,
+        freshness_beacon: args.freshness_beacon as CapabilityFreshnessBeacon,
+        subject_key: subjectKey,
+        delegation_chain_root: args.delegation_chain_root,
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(request, null, 2) }],
+      };
+    } catch (e: unknown) {
+      return { content: [{ type: "text" as const, text: safeError("aps_capability_evaluate_authority failed", e) }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "aps_capability_mint_receipt",
+  "v0.1 capability-token gateway receipt (M3). Gateway signs a permit or deny over the sink's exact challenge_hash. Echoes the M2 delegation_chain_root so the sink can verify the gateway saw the same chain the subject committed to. Search keywords: capability token, challenge receipt, gateway receipt, M3.",
+  {
+    request: z.any().describe("AuthorityEvaluationRequest from M2"),
+    decision: z.enum(["permit", "deny"]),
+    deny_reason: z.string().optional(),
+    policy_digest: z.string().describe("SHA-256 of the policy bundle used in evaluation"),
+    gateway_private_key: z.string(),
+    gateway_public_key: z.string(),
+  },
+  async (args) => {
+    try {
+      const gatewayKey: CapabilityKeyPair = {
+        publicKey: args.gateway_public_key,
+        privateKey: args.gateway_private_key,
+      };
+      const receipt = mintCapabilityChallengeReceipt({
+        request: args.request as CapabilityEvaluationRequest,
+        decision: args.decision as CapabilityDecision,
+        deny_reason: args.deny_reason,
+        policy_digest: args.policy_digest,
+        gateway_key: gatewayKey,
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(receipt, null, 2) }],
+      };
+    } catch (e: unknown) {
+      return { content: [{ type: "text" as const, text: safeError("aps_capability_mint_receipt failed", e) }], isError: true };
+    }
+  },
+);
+
+server.tool(
+  "aps_capability_sign_effect",
+  "v0.1 capability-token sink effect receipt (M4). Sink consumes the token preimage from the gateway's M3 (rejecting on nullifier replay), executes the action, and signs an EffectReceipt binding the consumed token to the result. The (M1, M3, M4) tuple is the full attestation record. Search keywords: capability token, effect receipt, M4, sink attestation.",
+  {
+    challenge: z.any().describe("Original SinkChallenge from M1 (for binding verification)"),
+    challenge_receipt: z.any().describe("ChallengeReceipt from M3"),
+    effect: z.object({
+      executed_at: z.string(),
+      outcome: z.enum(["success", "failure", "partial"]),
+      result_digest: z.string(),
+    }),
+    sink_private_key: z.string(),
+    sink_public_key: z.string(),
+    gateway_public_key: z.string().describe("Used to verify M3 before consuming the token"),
+    expected_delegation_chain_root: z.string().optional().describe("If omitted, falls back to the receipt's own root"),
+  },
+  async (args) => {
+    try {
+      const sinkKey: CapabilityKeyPair = {
+        publicKey: args.sink_public_key,
+        privateKey: args.sink_private_key,
+      };
+      const challenge = args.challenge as CapabilitySinkChallenge;
+      const receipt = args.challenge_receipt as CapabilityChallengeReceipt;
+
+      const verification = verifyCapabilityChallengeReceipt({
+        receipt,
+        expected_challenge: challenge,
+        expected_delegation_chain_root:
+          args.expected_delegation_chain_root ?? receipt.delegation_chain_root,
+        gateway_public_key: args.gateway_public_key,
+      });
+      if (!verification.ok) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: "M3 verification failed", reason: verification.reason }) }],
+          isError: true,
+        };
+      }
+      if (receipt.decision !== "permit") {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: "M3 is a deny — refusing to emit M4", deny_reason: receipt.deny_reason }) }],
+          isError: true,
+        };
+      }
+      const preimage = receipt.authority_token_preimage!;
+      capabilityNullifierSet.consume(preimage);
+
+      const effectReceipt = signCapabilityEffectReceipt({
+        challenge_receipt: receipt,
+        effect: args.effect as CapabilitySinkEffect,
+        sink_key: sinkKey,
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            effect_receipt: effectReceipt,
+            nullifier_set_size: capabilityNullifierSet.size(),
+          }, null, 2),
+        }],
+      };
+    } catch (e: unknown) {
+      return { content: [{ type: "text" as const, text: safeError("aps_capability_sign_effect failed", e) }], isError: true };
+    }
+  },
+);
 
 server.prompt(
   "coordination_role",
