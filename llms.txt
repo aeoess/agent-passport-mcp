@@ -22,3 +22,14 @@ This is a 1:1 adapter on top of the `agent-passport-system` SDK. If it is in the
 - Remote MCP: https://github.com/aeoess/agent-passport-remote-mcp (Railway-deployed, mcp.aeoess.com)
 - Website: https://aeoess.com
 - Full project reference: https://aeoess.com/llms-full.txt
+
+## Papers
+
+- The Agent Social Contract: https://doi.org/10.5281/zenodo.18749779
+- Monotonic Narrowing: https://doi.org/10.5281/zenodo.18932404
+- Faceted Authority Attenuation: https://doi.org/10.5281/zenodo.19260073
+- Behavioral Derivation Rights: https://doi.org/10.5281/zenodo.19476002
+- Physics-Enforced Delegation: https://doi.org/10.5281/zenodo.19478584
+- Governance in the Medium: https://doi.org/10.5281/zenodo.19582550
+- Cognitive Attestation: https://doi.org/10.5281/zenodo.19646276
+- IETF Internet-Draft: draft-pidlisnyi-aps-00
