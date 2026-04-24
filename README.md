@@ -18,7 +18,7 @@ Available profiles: essential (default), identity, governance, coordination, com
 
 > **For AI agents:** visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. MCP discovery: [.well-known/mcp.json](https://aeoess.com/.well-known/mcp.json).
 
-Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Full surface area under `APS_PROFILE=full`: 150 tools across 125 modules (84 core + 39 v2 constitutional governance). Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172).
+Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Full surface area under `APS_PROFILE=full`: 150 tools across 125 modules (84 core + 41 v2 constitutional governance). Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172).
 
 ## Quick Start
 
