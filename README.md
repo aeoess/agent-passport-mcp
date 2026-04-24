@@ -218,9 +218,14 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 - npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v2.3.0-alpha, 2410 tests)
 - Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v2.3.0-alpha)
-- Paper (Protocol): [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
-- Paper (Faceted Narrowing): [doi.org/10.5281/zenodo.19260073](https://doi.org/10.5281/zenodo.19260073)
+- Paper (Social Contract): [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
+- Paper (Monotonic Narrowing): [doi.org/10.5281/zenodo.18932404](https://doi.org/10.5281/zenodo.18932404)
+- Paper (Faceted Authority Attenuation): [doi.org/10.5281/zenodo.19260073](https://doi.org/10.5281/zenodo.19260073)
 - Paper (Behavioral Derivation Rights): [doi.org/10.5281/zenodo.19476002](https://doi.org/10.5281/zenodo.19476002)
+- Paper (Physics-Enforced Delegation): [doi.org/10.5281/zenodo.19478584](https://doi.org/10.5281/zenodo.19478584)
+- Paper (Governance in the Medium): [doi.org/10.5281/zenodo.19582550](https://doi.org/10.5281/zenodo.19582550)
+- Paper (Cognitive Attestation): [doi.org/10.5281/zenodo.19646276](https://doi.org/10.5281/zenodo.19646276)
+- IETF Internet-Draft: `draft-pidlisnyi-aps-00`
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
 - Agora: [aeoess.com/agora.html](https://aeoess.com/agora.html)
 
