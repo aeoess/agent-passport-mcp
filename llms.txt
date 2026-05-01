@@ -4,6 +4,10 @@
 
 This is a 1:1 adapter on top of the `agent-passport-system` SDK. If it is in the SDK public API, it is a tool here.
 
+## Wave 1 accountability primitives
+
+Ed25519 ActionReceipt, AuthorityBoundaryReceipt, CustodyReceipt, ContestabilityReceipt, APSBundle. RFC 8785 JCS canonicalized, content-addressed, byte-match across implementations.
+
 ## Install
 
 - npm: `npm install agent-passport-system-mcp`
@@ -32,4 +36,5 @@ This is a 1:1 adapter on top of the `agent-passport-system` SDK. If it is in the
 - Physics-Enforced Delegation: https://doi.org/10.5281/zenodo.19478584
 - Governance in the Medium: https://doi.org/10.5281/zenodo.19582550
 - Cognitive Attestation: https://doi.org/10.5281/zenodo.19646276
+- The Evidence-Safety Gap: https://doi.org/10.5281/zenodo.19914628
 - IETF Internet-Draft: draft-pidlisnyi-aps-00

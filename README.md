@@ -18,7 +18,7 @@ Available profiles: essential (default), identity, governance, coordination, com
 
 > **For AI agents:** visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. MCP discovery: [.well-known/mcp.json](https://aeoess.com/.well-known/mcp.json).
 
-Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Full surface area under `APS_PROFILE=full`: 150 tools across 127 modules (84 core + 41 v2 constitutional governance). Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172).
+Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Full surface area under `APS_PROFILE=full`: 150 tools across 127 modules (84 core + 41 v2 constitutional governance, including Wave 1 accountability primitives — Ed25519 ActionReceipt, AuthorityBoundaryReceipt, CustodyReceipt, ContestabilityReceipt, APSBundle, RFC 8785 JCS canonicalized and byte-match across implementations). Independently cited by [PDR in Production (Nanook & Gerundium, UBC)](https://doi.org/10.5281/zenodo.19323172).
 
 ## Quick Start
 
@@ -216,7 +216,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v2.5.0-alpha, 2,479 tests)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v2.5.0-alpha, 2,536 tests)
 - Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v2.5.0-alpha)
 - Paper (Social Contract): [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Paper (Monotonic Narrowing): [doi.org/10.5281/zenodo.18932404](https://doi.org/10.5281/zenodo.18932404)
@@ -225,6 +225,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 - Paper (Physics-Enforced Delegation): [doi.org/10.5281/zenodo.19478584](https://doi.org/10.5281/zenodo.19478584)
 - Paper (Governance in the Medium): [doi.org/10.5281/zenodo.19582550](https://doi.org/10.5281/zenodo.19582550)
 - Paper (Cognitive Attestation): [doi.org/10.5281/zenodo.19646276](https://doi.org/10.5281/zenodo.19646276)
+- Paper (The Evidence-Safety Gap): [doi.org/10.5281/zenodo.19914628](https://doi.org/10.5281/zenodo.19914628)
 - IETF Internet-Draft: `draft-pidlisnyi-aps-00`
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
 - Agora: [aeoess.com/agora.html](https://aeoess.com/agora.html)
