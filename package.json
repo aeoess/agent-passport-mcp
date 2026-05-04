@@ -20,6 +20,7 @@
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepublishOnly": "npm run build && npm test",
     "postinstall": "echo '\\n🔑 Agent Passport MCP installed! Run: npx agent-passport-system-mcp setup\\n   Or for zero-install remote: npx agent-passport-system-mcp setup --remote\\n'",
+    "postversion": "if [ -f ~/aeoess_web/scripts/sync-project-state.mjs ]; then node ~/aeoess_web/scripts/sync-project-state.mjs mcp $npm_package_version; else echo 'postversion: ~/aeoess_web/scripts/sync-project-state.mjs not found, skipping project-state sync'; fi",
     "postpublish": "cd ~/aeoess_web && node scripts/propagate.mjs --apply --commit 2>/dev/null || echo 'Propagation skipped (aeoess_web not found)'"
   },
   "keywords": [
