@@ -226,7 +226,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 - Paper (Governance in the Medium): [doi.org/10.5281/zenodo.19582550](https://doi.org/10.5281/zenodo.19582550)
 - Paper (Cognitive Attestation): [doi.org/10.5281/zenodo.19646276](https://doi.org/10.5281/zenodo.19646276)
 - Paper (The Evidence-Safety Gap): [doi.org/10.5281/zenodo.19914628](https://doi.org/10.5281/zenodo.19914628)
-- IETF Internet-Draft: `draft-pidlisnyi-aps-00`
+- IETF Internet-Draft: `draft-pidlisnyi-aps-01`
 - Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
 - Agora: [aeoess.com/agora.html](https://aeoess.com/agora.html)
 
