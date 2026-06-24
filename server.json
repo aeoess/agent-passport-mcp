@@ -2,18 +2,18 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.aeoess/agent-passport-mcp",
   "title": "Agent Passport System",
-  "description": "Ed25519 identity, delegation, governance, and commerce for AI agents. 44 tools.",
+  "description": "Ed25519 identity, delegation, governance, and commerce for AI agents. 150 tools.",
   "websiteUrl": "https://aeoess.com",
   "repository": {
     "url": "https://github.com/aeoess/agent-passport-mcp",
     "source": "github"
   },
-  "version": "2.4.4",
+  "version": "3.2.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "agent-passport-system-mcp",
-      "version": "2.4.4",
+      "version": "3.2.2",
       "transport": {
         "type": "stdio"
       }

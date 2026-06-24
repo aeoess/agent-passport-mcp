@@ -19,7 +19,7 @@
   "relatedServers": [
     "aeoess/mingle-mcp"
   ],
-  "tools_count": 125,
+  "tools_count": 150,
   "install": {
     "npm": "agent-passport-system-mcp"
   },
