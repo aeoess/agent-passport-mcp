@@ -209,10 +209,9 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Recognition
 
-- Integrated into [Microsoft agent-governance-toolkit](https://github.com/microsoft/agent-governance-toolkit) (PR #274)
+- Three contribution PRs merged into the Microsoft Agent Governance Toolkit by a Microsoft maintainer (#274, #598, #1328)
 - Public comment submitted to NIST NCCoE on AI Agent Identity and Authorization standards
 - Collaboration with IETF DAAP draft author on delegation spec
-- Endorsed by Garry Tan (CEO, Y Combinator)
 
 ## Links
 
