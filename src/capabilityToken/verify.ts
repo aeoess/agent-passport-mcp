@@ -28,7 +28,7 @@ export function verifySinkChallenge(
   // capability challenge stayed redeemable forever. nowMs defaults to the wall clock so the check
   // is enforced by default and cannot fail open; tests inject a fixed clock.
   const expMs = Date.parse(challenge.expires_at);
-  if (Number.isFinite(expMs) && nowMs > expMs) {
+  if (!Number.isFinite(expMs) || nowMs > expMs) {
     return { ok: false, reason: "challenge expired" };
   }
   return { ok: true };
@@ -65,7 +65,7 @@ export function verifyChallengeReceipt(
   // Reject a receipt whose underlying challenge has expired. expires_at was never enforced, so an
   // expired capability stayed redeemable. nowMs defaults to the wall clock (enforced by default).
   const expMs = Date.parse(opts.expected_challenge.expires_at);
-  if (Number.isFinite(expMs) && nowMs > expMs) {
+  if (!Number.isFinite(expMs) || nowMs > expMs) {
     return { ok: false, reason: "challenge expired" };
   }
   const expectedHash = challengeHash(opts.expected_challenge);
