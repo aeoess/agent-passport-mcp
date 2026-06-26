@@ -470,3 +470,44 @@ test("Hash stability: re-issuing M1 with the same nonce + clock yields the same 
     canonicalWithoutSignature(b, "sink_signature"),
   );
 });
+
+// Regression (round-3, item 4): the gateway M3 mint must fail closed on an expired challenge.
+// expires_at is signed into the M1 challenge, so minting a PERMIT after it would let a stale
+// challenge be redeemed. mintChallengeReceipt now downgrades an expired permit to a deny.
+test("M3 mint downgrades a permit over an expired challenge to a deny", () => {
+  const actors = setupActors();
+  const challenge = issueSinkChallenge({
+    sink_id: actors.sink.publicKey,
+    subject_id: actors.subject.publicKey,
+    action: sampleAction(),
+    sink_key: actors.sink,
+  });
+  const request = buildEvaluationRequest({
+    challenge,
+    delegation_chain: sampleDelegationChain(actors),
+    authority_token: sampleAuthorityToken(),
+    freshness_beacon: sampleFreshnessBeacon(actors),
+    subject_key: actors.subject,
+  });
+
+  // Mint with a clock far past the challenge's expires_at: permit must become deny.
+  const expired = mintChallengeReceipt({
+    request,
+    decision: "permit",
+    policy_digest: "policy-bundle-sha256-v0.1-fixture",
+    gateway_key: actors.gateway,
+    now: new Date("3000-01-01T00:00:00Z"),
+  });
+  assert.equal(expired.decision, "deny");
+  assert.equal(expired.deny_reason, "challenge_expired");
+  assert.equal(expired.authority_token_preimage, undefined);
+
+  // Control: minting within the validity window still permits.
+  const fresh = mintChallengeReceipt({
+    request,
+    decision: "permit",
+    policy_digest: "policy-bundle-sha256-v0.1-fixture",
+    gateway_key: actors.gateway,
+  });
+  assert.equal(fresh.decision, "permit");
+});

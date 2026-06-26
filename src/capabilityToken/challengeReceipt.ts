@@ -51,11 +51,23 @@ export interface MintChallengeReceiptOptions {
 export function mintChallengeReceipt(
   opts: MintChallengeReceiptOptions,
 ): ChallengeReceipt {
+  const evaluatedAt = (opts.now ?? new Date()).toISOString();
+  // Fail closed on an expired challenge: expires_at is signed into the challenge, so the gateway
+  // must not mint a PERMIT after it. Downgrade an expired permit to a deny. nowMs defaults to the
+  // wall clock; an unparseable expires_at is treated as expired.
+  const nowMs = (opts.now ?? new Date()).getTime();
+  const expMs = Date.parse(opts.request.challenge.expires_at);
+  let decision = opts.decision;
+  let denyReason = opts.deny_reason;
+  if (decision === "permit" && (!Number.isFinite(expMs) || nowMs > expMs)) {
+    decision = "deny";
+    denyReason = "challenge_expired";
+  }
+
   const cHash = opts.override_challenge_hash ?? challengeHash(opts.request.challenge);
   const claims =
     opts.epistemic_claims ??
-    (opts.decision === "permit" ? CLOSED_PERMIT_CLAIMS : CLOSED_DENY_CLAIMS);
-  const evaluatedAt = (opts.now ?? new Date()).toISOString();
+    (decision === "permit" ? CLOSED_PERMIT_CLAIMS : CLOSED_DENY_CLAIMS);
 
   const chainRoot = opts.omit_delegation_chain_root
     ? ""
@@ -64,13 +76,13 @@ export function mintChallengeReceipt(
   const unsigned: Omit<ChallengeReceipt, "gateway_signature"> = {
     type: "aps.capability.v1.ChallengeReceipt",
     challenge_hash: cHash,
-    decision: opts.decision,
-    ...(opts.decision === "deny" && opts.deny_reason
-      ? { deny_reason: opts.deny_reason }
+    decision: decision,
+    ...(decision === "deny" && denyReason
+      ? { deny_reason: denyReason }
       : {}),
     delegation_chain_root: chainRoot,
     delegation_depth: opts.request.delegation_depth,
-    ...(opts.decision === "permit"
+    ...(decision === "permit"
       ? { authority_token_preimage: opts.request.authority_token.token_preimage }
       : {}),
     evaluated_at: evaluatedAt,
