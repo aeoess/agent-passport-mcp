@@ -2944,13 +2944,21 @@ server.tool(
       models: ['mcp'],
     });
 
-    // Look up or create commerce delegation using actual scope/spend
-    const commerceDel = createCommerceDelegation({
-      agentId: args.agent_id,
-      delegationId: args.delegation_id,
-      spendLimit: actualSpendLimit,
-      approvedMerchants: [], // Empty = all merchants allowed
-    });
+    // Look up or create commerce delegation using actual scope/spend.
+    // Reflect spend already recorded on the session delegation instead of the hardcoded 0 that
+    // createCommerceDelegation returns, so the spend gate is not a structural no-op that always
+    // sees the full limit remaining. NOTE: nothing in the MCP yet INCREMENTS sessionDel.spentAmount
+    // (a spend-record path is a metering decision flagged for Tima), so cumulative enforcement here
+    // is only as complete as the session state that feeds it.
+    const commerceDel = {
+      ...createCommerceDelegation({
+        agentId: args.agent_id,
+        delegationId: args.delegation_id,
+        spendLimit: actualSpendLimit,
+        approvedMerchants: [], // Empty = all merchants allowed
+      }),
+      spentAmount: (sessionDel as { spentAmount?: number } | undefined)?.spentAmount ?? 0,
+    };
 
     const result = commercePreflight({
       signedPassport: agent.passport,
@@ -2982,11 +2990,18 @@ server.tool(
     spend_limit: z.number().describe("Total allowed spend"),
   },
   async (args) => {
-    const commerceDel = createCommerceDelegation({
-      agentId: args.agent_id,
-      delegationId: args.delegation_id,
-      spendLimit: args.spend_limit,
-    });
+    // Report spend recorded on the session delegation instead of always reporting 0. Same caveat
+    // as commerce_preflight: nothing in the MCP yet increments sessionDel.spentAmount (metering
+    // record path flagged for Tima), so this reflects whatever the session state holds.
+    const sessionDel = state.delegations.get(args.delegation_id);
+    const commerceDel = {
+      ...createCommerceDelegation({
+        agentId: args.agent_id,
+        delegationId: args.delegation_id,
+        spendLimit: args.spend_limit,
+      }),
+      spentAmount: (sessionDel as { spentAmount?: number } | undefined)?.spentAmount ?? 0,
+    };
 
     const summary = getSpendSummary(commerceDel);
 
