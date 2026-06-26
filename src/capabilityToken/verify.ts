@@ -18,23 +18,33 @@ export type VerifyResult = { ok: true } | { ok: false; reason: string };
 export function verifySinkChallenge(
   challenge: SinkChallenge,
   sinkPublicKey: string,
+  nowMs: number = Date.now(),
 ): VerifyResult {
   const payload = canonicalWithoutSignature(challenge, "sink_signature");
-  return verify(payload, challenge.sink_signature, sinkPublicKey)
-    ? { ok: true }
-    : { ok: false, reason: "sink_signature invalid" };
+  if (!verify(payload, challenge.sink_signature, sinkPublicKey)) {
+    return { ok: false, reason: "sink_signature invalid" };
+  }
+  // Enforce expiry. expires_at is signed and propagated but was never checked, so an expired
+  // capability challenge stayed redeemable forever. nowMs defaults to the wall clock so the check
+  // is enforced by default and cannot fail open; tests inject a fixed clock.
+  const expMs = Date.parse(challenge.expires_at);
+  if (Number.isFinite(expMs) && nowMs > expMs) {
+    return { ok: false, reason: "challenge expired" };
+  }
+  return { ok: true };
 }
 
 export function verifyAuthorityEvaluationRequest(
   request: AuthorityEvaluationRequest,
   subjectPublicKey: string,
   sinkPublicKey: string,
+  nowMs: number = Date.now(),
 ): VerifyResult {
   const payload = canonicalWithoutSignature(request, "subject_signature");
   if (!verify(payload, request.subject_signature, subjectPublicKey)) {
     return { ok: false, reason: "subject_signature invalid" };
   }
-  return verifySinkChallenge(request.challenge, sinkPublicKey);
+  return verifySinkChallenge(request.challenge, sinkPublicKey, nowMs);
 }
 
 export interface VerifyChallengeReceiptOptions {
@@ -46,10 +56,17 @@ export interface VerifyChallengeReceiptOptions {
 
 export function verifyChallengeReceipt(
   opts: VerifyChallengeReceiptOptions,
+  nowMs: number = Date.now(),
 ): VerifyResult {
   const payload = canonicalWithoutSignature(opts.receipt, "gateway_signature");
   if (!verify(payload, opts.receipt.gateway_signature, opts.gateway_public_key)) {
     return { ok: false, reason: "gateway_signature invalid" };
+  }
+  // Reject a receipt whose underlying challenge has expired. expires_at was never enforced, so an
+  // expired capability stayed redeemable. nowMs defaults to the wall clock (enforced by default).
+  const expMs = Date.parse(opts.expected_challenge.expires_at);
+  if (Number.isFinite(expMs) && nowMs > expMs) {
+    return { ok: false, reason: "challenge expired" };
   }
   const expectedHash = challengeHash(opts.expected_challenge);
   if (opts.receipt.challenge_hash !== expectedHash) {
