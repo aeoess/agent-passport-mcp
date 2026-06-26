@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.2.4
+
+Dependency-hygiene patch. No tool, API, or behavior change in this server.
+
+### Security (dependencies)
+- Pinned the transitive `hono` to `^4.12.27` via an npm `overrides` entry, which clears the
+  high-severity advisory (path traversal in `serve-static` on Windows, a CORS default-wildcard
+  reflection, and several AWS Lambda adapter issues) reported against `hono <= 4.12.24`. `hono` is a
+  transitive dependency of `@modelcontextprotocol/sdk` (via `@hono/node-server`); this is a stdio server
+  that does not import or use hono's HTTP features, so the pin is for audit hygiene rather than to close
+  a reachable issue here.
+
+### Known remaining advisories
+- Three moderate advisories remain (`@anthropic-ai/sdk` and `uuid`), reaching the tree transitively
+  through `agent-passport-system`. They are tracked for a separate SDK dependency refresh and are not
+  addressed here. `npm audit fix --force` is not used because it would downgrade `agent-passport-system`
+  to a breaking older version.
+
 ## 3.2.3
 
 Patch release. Behavior and security fixes; no new tools or public API. Tracks SDK v2.9.0.
