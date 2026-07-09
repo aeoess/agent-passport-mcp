@@ -25,7 +25,7 @@ Ed25519 ActionReceipt, AuthorityBoundaryReceipt, CustodyReceipt, ContestabilityR
 - Python SDK: https://github.com/aeoess/agent-passport-python
 - Remote MCP: https://github.com/aeoess/agent-passport-remote-mcp (Railway-deployed, mcp.aeoess.com)
 - Website: https://aeoess.com
-- Full project reference: https://aeoess.com/llms-full.txt
+- Full project reference: https://agent-passport.org/llms-full.txt
 
 ## Papers
 

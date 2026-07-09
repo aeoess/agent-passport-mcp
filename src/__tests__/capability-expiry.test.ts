@@ -1,4 +1,4 @@
-// Copyright 2024-2026 Tymofii Pidlisnyi. Apache-2.0 license. See LICENSE.
+// Copyright 2026 Tymofii Pidlisnyi. Apache-2.0 license. See LICENSE.
 // Regression: a capability SinkChallenge carries a signed expires_at that no
 // verifier enforced, so an expired permit stayed redeemable forever.
 // verifySinkChallenge / verifyChallengeReceipt now reject an expired challenge.
