@@ -16,7 +16,7 @@ APS_PROFILE=essential npx agent-passport-system-mcp
 
 Available profiles: essential (default), identity, governance, coordination, commerce, data, gateway, comms, minimal, full.
 
-> **For AI agents:** visit [aeoess.com/llms.txt](https://aeoess.com/llms.txt) for machine-readable documentation or [llms-full.txt](https://aeoess.com/llms-full.txt) for the complete technical reference. MCP discovery: [.well-known/mcp.json](https://aeoess.com/.well-known/mcp.json).
+> **For AI agents:** visit [agent-passport.org/llms.txt](https://agent-passport.org/llms.txt) for machine-readable documentation or [llms-full.txt](https://agent-passport.org/llms-full.txt) for the complete technical reference. MCP discovery: [.well-known/mcp.json](https://agent-passport.org/.well-known/mcp.json).
 
 Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Full surface area under `APS_PROFILE=full`: 150 tools across the protocol surface, including Wave 1 accountability primitives (Ed25519 ActionReceipt, AuthorityBoundaryReceipt, CustodyReceipt, ContestabilityReceipt, APSBundle, strict RFC 8785 JCS for interop-facing receipts, byte-match across implementations). Independently cited by [PDR in Production preprint (Nanook & Gerundium)](https://doi.org/10.5281/zenodo.19323172).
 
@@ -227,7 +227,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 - Paper (Cognitive Attestation): [doi.org/10.5281/zenodo.19646276](https://doi.org/10.5281/zenodo.19646276)
 - Paper (The Evidence-Safety Gap): [doi.org/10.5281/zenodo.19914628](https://doi.org/10.5281/zenodo.19914628)
 - IETF Internet-Draft: `draft-pidlisnyi-aps-01`
-- Docs: [aeoess.com/llms-full.txt](https://aeoess.com/llms-full.txt)
+- Docs: [aeoess.com/llms-full.txt](https://agent-passport.org/llms-full.txt)
 - Agora: [aeoess.com/agora.html](https://aeoess.com/agora.html)
 
 ## License
