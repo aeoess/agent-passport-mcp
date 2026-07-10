@@ -1,6 +1,6 @@
 {
   "name": "agent-passport-system-mcp",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
   "description": "MCP server for the Agent Passport System - protocol-layer tools only. 150 tools (132 protocol + 10 gateway deprecation stubs). Identity, delegation, reputation, attestation, coordination, commerce, attribution primitive, attribution settlement. Tracks SDK v3.3.0 (Wave 1 accountability primitives + Phase 4.1 payment rails shipped in SDK; MCP rail-tool exposure deferred). For gateway-runtime tools (ProxyGateway, AgentContext, DataEnforcementGate), use gateway.aeoess.com REST API or pin to v3.1.x.",
   "type": "module",
@@ -50,7 +50,7 @@
   "homepage": "https://github.com/aeoess/agent-passport-mcp",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "agent-passport-system": "^3.3.0",
+    "agent-passport-system": "^3.3.1",
     "zod": "^3.25.76"
   },
   "overrides": {
