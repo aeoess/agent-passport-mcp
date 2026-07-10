@@ -233,3 +233,6 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 ## License
 
 Apache-2.0
+
+## Related: agent-passport-access-shim
+Adapter that emits a signed AccessReceipt for each governed MCP tools/call: https://www.npmjs.com/package/agent-passport-access-shim. Receipts verify with the SDK or in the browser at https://agent-passport.org/verify.html.
