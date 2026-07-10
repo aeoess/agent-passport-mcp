@@ -1,0 +1,38 @@
+{
+  "name": "agent-passport-access-shim",
+  "version": "0.1.0",
+  "description": "Adapter that emits a signed APS AccessReceipt for each governed MCP tools/call. Signing and verification are the agent-passport-system SDK's; this is proof of governed access, not a contribution or value claim.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "keywords": [
+    "agent-passport",
+    "mcp",
+    "access-receipt",
+    "attribution",
+    "provenance"
+  ],
+  "license": "Apache-2.0",
+  "author": "Tymofii Pidlisnyi",
+  "homepage": "https://agent-passport.org",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aeoess/agent-passport-mcp.git",
+    "directory": "shim"
+  },
+  "dependencies": {
+    "agent-passport-system": "^3.3.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
