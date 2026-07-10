@@ -216,7 +216,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 ## Links
 
 - npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v3.3.0, 4,097 tests)
-- Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v2.7.0)
+- Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v2.8.0)
 - Go SDK: [agent-passport-go](https://pkg.go.dev/github.com/aeoess/agent-passport-go) (v0.3.0; `go get github.com/aeoess/agent-passport-go@v0.3.0`)
 - Paper (Social Contract): [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Paper (Monotonic Narrowing): [doi.org/10.5281/zenodo.18932404](https://doi.org/10.5281/zenodo.18932404)
