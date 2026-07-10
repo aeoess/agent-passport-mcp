@@ -6,19 +6,19 @@
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@aeoess/agent-passport-system-mcp/badge" />
 </a>
 
-Enforcement and accountability layer for AI agents. Bring your own identity. 20 essential tools by default: identity, delegation, enforcement, commerce, reputation.
+Enforcement and accountability layer for AI agents. Bring your own identity. 150 tools by default across identity, delegation, enforcement, commerce, reputation, governance, coordination, and data.
 
 ```bash
-APS_PROFILE=essential npx agent-passport-system-mcp
+npx agent-passport-system-mcp
 ```
 
-`essential` is the default profile — the 20 tools 90% of integrations need. Set `APS_PROFILE=full` for all 150 tools.
+The default profile is `full` — all 150 tools. Set `APS_PROFILE=essential` for a 26-tool slim profile covering the primitives most integrations need (identity, delegation, enforcement, commerce, reputation).
 
-Available profiles: essential (default), identity, governance, coordination, commerce, data, gateway, comms, minimal, full.
+Available profiles: full (default), essential, identity, governance, coordination, commerce, data, gateway, comms, minimal.
 
 > **For AI agents:** visit [agent-passport.org/llms.txt](https://agent-passport.org/llms.txt) for machine-readable documentation or [llms-full.txt](https://agent-passport.org/llms-full.txt) for the complete technical reference. MCP discovery: [.well-known/mcp.json](https://agent-passport.org/.well-known/mcp.json).
 
-Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Full surface area under `APS_PROFILE=full`: 150 tools across the protocol surface, including Wave 1 accountability primitives (Ed25519 ActionReceipt, AuthorityBoundaryReceipt, CustodyReceipt, ContestabilityReceipt, APSBundle, strict RFC 8785 JCS for interop-facing receipts, byte-match across implementations). Independently cited by [PDR in Production preprint (Nanook & Gerundium)](https://doi.org/10.5281/zenodo.19323172).
+Works with any MCP client: Claude Desktop, Claude Code, Cursor, Windsurf, and more. Full surface area (the default): 150 tools across the protocol surface, including Wave 1 accountability primitives (Ed25519 ActionReceipt, AuthorityBoundaryReceipt, CustodyReceipt, ContestabilityReceipt, APSBundle, strict RFC 8785 JCS for interop-facing receipts, byte-match across implementations). Independently cited by [PDR in Production preprint (Nanook & Gerundium)](https://doi.org/10.5281/zenodo.19323172).
 
 ## Quick Start
 
