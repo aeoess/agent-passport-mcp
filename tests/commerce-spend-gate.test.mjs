@@ -24,8 +24,20 @@ test('checkSpendGate denies when the delegation already has non-zero spentAmount
   assert.equal(checkSpendGate({ ...d, spentAmount: 0 }, { amount: 60, currency: 'usd' }).passed, true)
 })
 
-test('commerce_preflight and get_commerce_spend thread session spend instead of discarding it', () => {
+test('get_commerce_spend threads session spend instead of discarding it', () => {
+  // commerce_preflight was deprecated in agent-passport-system 3.3.0 (orchestration moved to the
+  // gateway; the SDK export is now a throw-only stub), so it no longer composes a delegation or
+  // touches the spend gate. get_commerce_spend still runs locally and must keep threading the real
+  // session spentAmount rather than reverting to the hardcoded 0.
   const matches = INDEX_SRC.match(/spentAmount:\s*\(sessionDel/g) || []
-  assert.ok(matches.length >= 2, 'both commerce tools must read sessionDel.spentAmount, not hardcode 0')
-  assert.ok(INDEX_SRC.includes('a metering decision flagged'), 'the metering caveat must be documented in source')
+  assert.ok(matches.length >= 1, 'get_commerce_spend must read sessionDel.spentAmount, not hardcode 0')
+  assert.ok(INDEX_SRC.includes('a metering record path is a'), 'the metering caveat must be documented in source')
+})
+
+test('commerce_preflight returns a machine-readable gateway deprecation instead of throwing', () => {
+  // The SDK commercePreflight() is a throw-only migration stub in 3.3.0. The tool must surface a
+  // clean deprecation result pointing to the gateway, not let the stub throw an unhandled error.
+  assert.ok(INDEX_SRC.includes('commerce_preflight_moved_to_gateway'), 'deprecation error code must be present')
+  // The old handler invoked the stub as commercePreflight({ ... }); ensure no such call remains.
+  assert.ok(!INDEX_SRC.includes('commercePreflight({'), 'the throw-only SDK stub must no longer be called')
 })

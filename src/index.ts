@@ -45,7 +45,9 @@ import {
   createActionIntent, evaluateIntent,
   FloorValidatorV1,
   // Commerce (Layer 8)
-  commercePreflight, createCommerceDelegation,
+  // commercePreflight moved to the gateway in agent-passport-system 3.3.0 (throw-only stub);
+  // the MCP tool now returns a machine-readable deprecation notice instead of calling it.
+  createCommerceDelegation,
   getSpendSummary, requestHumanApproval,
   // Principal Identity
   createPrincipalIdentity, endorseAgent, verifyEndorsement,
@@ -629,7 +631,7 @@ function movedToGateway(toolName: string) {
 
 const server = new McpServer({
   name: "agent-passport-mcp",
-  version: "2.0.0",
+  version: "3.3.0",
 });
 
 // Track server start time for Tier 0 connection timing
@@ -717,6 +719,7 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'create_intent', 'evaluate_intent', 'list_profiles',
   ]),
   essential: new Set([
+    'identify',
     'generate_keys', 'issue_passport', 'get_passport_grade',
     'create_delegation', 'verify_delegation', 'revoke_delegation', 'sub_delegate',
     'load_values_floor', 'attest_to_floor',
@@ -946,6 +949,11 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
   'aps_capability_evaluate_authority': 'capability',
   'aps_capability_mint_receipt': 'capability',
   'aps_capability_sign_effect': 'capability',
+  // Mutual Authentication v1 (SDK v2.2.0) -> 'mutual-auth' scope
+  'mutualAuthBuildCertificate': 'mutual-auth',
+  'mutualAuthVerifyAttest': 'mutual-auth',
+  'mutualAuthDeriveSession': 'mutual-auth',
+  'mutualAuthVerifyTrustBundle': 'mutual-auth',
 };
 
 // ═══════════════════════════════════════
@@ -960,7 +968,8 @@ server.tool(
     const lines = Object.entries(TOOL_PROFILES).map(([name, tools]) =>
       `• ${name} (${tools.size} tools): ${Array.from(tools).slice(0, 6).join(', ')}${tools.size > 6 ? '...' : ''}`
     );
-    return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '132' : profileFilter?.size || '132'} tools)\n\nRecommended: essential (20 tools) — identity, delegation, enforcement, commerce, reputation.\n\n${lines.join('\n')}\n\n• full (132 tools): All tools exposed (default)` }] };
+    const essentialSize = TOOL_PROFILES.essential.size;
+    return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '150' : profileFilter?.size || '150'} tools)\n\nRecommended: essential (${essentialSize} tools) - identity, delegation, enforcement, commerce, reputation.\n\n${lines.join('\n')}\n\n• full (150 tools): All tools exposed (default)` }] };
   }
 );
 
@@ -970,7 +979,7 @@ server.tool(
 
 server.tool(
   "list_tools_for_scope",
-  "List available MCP tools filtered by delegation scope. Pass your delegation scopes to see which tools you can use. Scopes: identity, delegation, principal, reputation, coordination, communication, governance, commerce, data, gateway, network, temporal, attribution. Use ['*'] for all tools.",
+  "List available MCP tools filtered by delegation scope. Pass your delegation scopes to see which tools you can use. Scopes: identity, delegation, principal, reputation, coordination, communication, governance, commerce, data, gateway, network, temporal, attribution, settlement, capability, mutual-auth. Use ['*'] for all tools.",
   {
     scopes: z.array(z.string()).describe("Your delegation scopes, e.g. ['identity', 'delegation', 'commerce']"),
   },
@@ -2914,7 +2923,7 @@ server.tool(
 
 server.tool(
   "commerce_preflight",
-  "Run preflight checks before a purchase. Validates passport, delegation, merchant, and spend limits.",
+  "[moved to gateway in SDK 3.3.0] The 6-gate commerce preflight orchestration moved out of the SDK and MCP into the AEOESS gateway. This tool no longer runs the pipeline locally; it returns a machine-readable deprecation notice pointing to the gateway commerce endpoint. Compose the pure gate predicates from the SDK yourself, or call the gateway.",
   {
     merchant_name: z.string().describe("Merchant to purchase from"),
     amount: z.number().describe("Purchase amount"),
@@ -2922,61 +2931,23 @@ server.tool(
     delegation_id: z.string().describe("Commerce delegation ID"),
     agent_id: z.string().describe("Agent making the purchase"),
   },
-  async (args) => {
+  async (_args) => {
     recordBehavior('commerce_preflight');
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-
-    // F-1 fix: look up actual delegation from session state for real scope/spend
-    const sessionDel = state.delegations.get(args.delegation_id);
-    const actualSpendLimit = sessionDel?.spendLimit ?? 1000;
-    const hasCommerceScope = sessionDel
-      ? sessionDel.scope.some((s: string) => s === 'commerce' || s === 'commerce:checkout' || s.startsWith('commerce'))
-      : false; // no delegation → no commerce scope (agent-context fallback removed with gateway move)
-
-    // Use session agent if available (created by identify), fallback to throwaway
-    const agent = state.sessionAgent || joinSocialContract({
-      name: args.agent_id,
-      mission: 'Commerce operation',
-      owner: 'mcp-session',
-      capabilities: hasCommerceScope ? ['commerce:checkout', 'commerce:browse'] : [],
-      platform: 'node',
-      models: ['mcp'],
-    });
-
-    // Look up or create commerce delegation using actual scope/spend.
-    // Reflect spend already recorded on the session delegation instead of the hardcoded 0 that
-    // createCommerceDelegation returns, so the spend gate is not a structural no-op that always
-    // sees the full limit remaining. NOTE: nothing in the MCP yet INCREMENTS sessionDel.spentAmount
-    // (a spend-record path is a metering decision flagged for Tima), so cumulative enforcement here
-    // is only as complete as the session state that feeds it.
-    const commerceDel = {
-      ...createCommerceDelegation({
-        agentId: args.agent_id,
-        delegationId: args.delegation_id,
-        spendLimit: actualSpendLimit,
-        approvedMerchants: [], // Empty = all merchants allowed
-      }),
-      spentAmount: (sessionDel as { spentAmount?: number } | undefined)?.spentAmount ?? 0,
-    };
-
-    const result = commercePreflight({
-      signedPassport: agent.passport,
-      delegation: commerceDel,
-      merchantName: args.merchant_name,
-      estimatedTotal: { amount: args.amount, currency: args.currency },
-    });
-
+    // commercePreflight() became a throw-only migration stub in agent-passport-system 3.3.0
+    // (the orchestrator moved to the gateway). Rather than let that stub throw, return a clean,
+    // machine-readable deprecation result so tools/list stays honest and calls fail predictably.
     return {
       content: [{
         type: "text" as const,
         text: JSON.stringify({
-          permitted: result.permitted,
-          checks: result.checks,
-          warnings: result.warnings,
-          blockedReason: result.blockedReason,
+          permitted: false,
+          error: 'commerce_preflight_moved_to_gateway',
+          reason: 'Commerce preflight orchestration was removed from the SDK and MCP in agent-passport-system 3.3.0. Run the 6-gate preflight via the AEOESS gateway commerce endpoint.',
+          gateway_endpoint: 'https://gateway.aeoess.com',
+          sdk_note: 'The SDK still exports the pure gate predicates (checkPassportGate, checkScopeGate, checkSpendGate, checkMerchantGate, checkWalletGate) and signCommerceReceipt, so callers can compose preflight themselves.',
         }, null, 2),
       }],
+      isError: true,
     };
   }
 );
@@ -2990,9 +2961,9 @@ server.tool(
     spend_limit: z.number().describe("Total allowed spend"),
   },
   async (args) => {
-    // Report spend recorded on the session delegation instead of always reporting 0. Same caveat
-    // as commerce_preflight: nothing in the MCP yet increments sessionDel.spentAmount (metering
-    // record path flagged for Tima), so this reflects whatever the session state holds.
+    // Report spend recorded on the session delegation instead of always reporting 0. Caveat:
+    // nothing in the MCP yet increments sessionDel.spentAmount (a metering record path is a
+    // decision flagged for Tima), so this reflects whatever the session state holds.
     const sessionDel = state.delegations.get(args.delegation_id);
     const commerceDel = {
       ...createCommerceDelegation({
