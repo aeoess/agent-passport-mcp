@@ -725,7 +725,7 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'load_values_floor', 'attest_to_floor',
     'create_intent', 'evaluate_intent', 'complete_action',
     'create_agent_context', 'execute_with_context',
-    'commerce_preflight', 'get_commerce_spend', 'request_human_approval',
+    'get_commerce_spend', 'request_human_approval',
     'resolve_authority', 'check_tier', 'rotate_key',
     // v2 boundary primitives — most-used entry points
     'aps_create_attribution_receipt',
