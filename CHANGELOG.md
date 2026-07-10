@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.3.0 (2026-07-10)
+
+- Tracks SDK 3.3.0: the agent-passport-system root barrel now exposes audience-binding, bilateral-pair, revocation-observation, evidence-bundle, and jurisdiction-selection. Dependency moves from ^2.6.0-alpha to ^3.3.0; no MCP call-site changes were needed.
+
 ## 3.2.4
 
 Dependency-hygiene patch. No tool, API, or behavior change in this server.
