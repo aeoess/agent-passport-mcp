@@ -5958,13 +5958,24 @@ server.tool(
         };
       }
       const preimage = receipt.authority_token_preimage!;
-      capabilityNullifierSet.consume(preimage);
+      // C-3 fix: reject replay before doing work, and consume the nullifier only
+      // AFTER the effect receipt is successfully signed. Consuming before signing
+      // meant a transient signing failure permanently burned a token that never
+      // produced a valid M4. The block is synchronous (no await between the peek,
+      // the sign, and the consume), so there is no TOCTOU window.
+      if (capabilityNullifierSet.isConsumed(preimage)) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ error: "nullifier replay: token preimage already consumed" }) }],
+          isError: true,
+        };
+      }
 
       const effectReceipt = signCapabilityEffectReceipt({
         challenge_receipt: receipt,
         effect: args.effect as CapabilitySinkEffect,
         sink_key: sinkKey,
       });
+      capabilityNullifierSet.consume(preimage);
       return {
         content: [{
           type: "text" as const,
