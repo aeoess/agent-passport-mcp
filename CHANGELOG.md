@@ -1,5 +1,20 @@
 # Changelog
 
+## 3.4.0 (2026-07-26)
+
+### Fixed / Security
+- **The replay nullifier is consumed after signing, not before, in `aps_capability_sign_effect`.** Consuming first meant a signing failure burned the nullifier, so a caller that retried after a transient error was rejected as a replay and the effect could never be signed. The nullifier is now claimed only once the signature exists.
+
+### Added
+- **`agent-passport-access-shim` 0.1.0**, a separate package that emits a signed `AccessReceipt` for each governed `tools/call`.
+
+### Docs
+- The browser verify page is linked and described across the navigation, footer, `llms.txt`, `AGENTS.md`, and README.
+- Tool descriptions synced to the live registry entries.
+
+### Note
+- This release tracks the `agent-passport-system` 3.x line. Moving the dependency onto the 4.x SDK is a separate change with its own test pass.
+
 ## 3.3.1 (2026-07-10)
 
 - Tracks SDK 3.3.1 (audit patch). commerce_preflight is gracefully deprecated: it returns a machine-readable moved-to-gateway result instead of calling the SDK's now-throw-only commercePreflight stub, so tools/list stays honest and the call fails cleanly. commerce_preflight also leaves the essential profile in this release (present through 3.3.0; essential is now 26 tools), since a deprecated stub must not be default-recommended. Also: server.json/.mcp/server.json version sync, README profile corrections (default full/150, essential opt-in/26), identify added to essential, mutualAuth tools added to the scope map, serverInfo and setup counts corrected.
