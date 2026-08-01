@@ -8,12 +8,12 @@
     "url": "https://github.com/aeoess/agent-passport-mcp",
     "source": "github"
   },
-  "version": "3.4.0",
+  "version": "4.0.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "agent-passport-system-mcp",
-      "version": "3.4.0",
+      "version": "4.0.0",
       "transport": {
         "type": "stdio"
       }

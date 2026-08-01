@@ -1,5 +1,27 @@
 # Changelog
 
+## 4.0.0 (2026-07-31)
+
+### Added
+- MCP 2026-07-28 support through the existing stdio entry while preserving the current 2025-era flow. Modern connections receive the required `resultType`, cache hints (`ttlMs`/`cacheScope`), and server identity metadata from the SDK.
+
+### Breaking
+- Node.js 20 or later is now required by the MCP v2 SDK family.
+- Corrected the input schemas for 32 fields across 23 tools. These fields were already required by their handlers but were previously declared as optional on the wire. Missing fields now fail at the validation boundary with a field-specific error instead of failing inside the handler.
+
+### Compatibility
+- All 150 tool names, profile membership, CLI entry points, and successful APS behavior are preserved.
+- Existing 2025-era initialization and tool-call flows remain supported.
+
+### Internal
+- Migrated from `@modelcontextprotocol/sdk` 1.x to `@modelcontextprotocol/server` 2.0.0 and Zod 4.
+- Retargeted the profile-filtering and handler-error wrapper from `.tool()` to `registerTool()`.
+- Verified the packed package end to end through the remote MCP bridge.
+
+### Note
+- The essential profile contains 25 profile-gated tools. Because `list_profiles` is always exposed, an essential-profile server presents 26 tools in total.
+- The `agent-passport-system` dependency remains on its current line (`^3.3.1`); updating that SDK is a separate change.
+
 ## 3.4.0 (2026-07-26)
 
 ### Fixed / Security
