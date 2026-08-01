@@ -12,9 +12,8 @@
 // Start: AGENT_KEY=<pubkey> npx agent-passport-system-mcp
 //   or:  call the identify tool first
 // ══════════════════════════════════════════════════════════════
-
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -740,9 +739,14 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
 const activeProfile = (process.env.APS_PROFILE || 'full').toLowerCase();
 const profileFilter = TOOL_PROFILES[activeProfile];
 
-// Wrap server.tool: profile filtering + try/catch on all handlers
-const _origTool: any = server.tool.bind(server);
-(server as any).tool = function(name: string, ...rest: any[]) {
+// Wrap server.registerTool: profile filtering + try/catch on all handlers.
+// Retargeted from the v1 `.tool` during the 2026-07-28 migration: the codemod
+// rewrote the 150 call sites to registerTool but left this wrapper on `.tool`,
+// which would have silently disabled both profile filtering and the handler
+// try/catch. The wrapper body is unchanged: registerTool(name, config, cb)
+// still carries the handler as its last argument.
+const _origTool: any = server.registerTool.bind(server);
+(server as any).registerTool = function(name: string, ...rest: any[]) {
   if (name !== 'list_profiles' && activeProfile !== 'full' && profileFilter && !profileFilter.has(name)) {
     return; // filtered out by profile
   }
@@ -960,500 +964,450 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
 // TOOL: list_profiles
 // ═══════════════════════════════════════
 
-server.tool(
-  "list_profiles",
-  "Show available tool profiles. Set APS_PROFILE env var to limit exposed tools (e.g. APS_PROFILE=data).",
-  {},
-  async () => {
-    const lines = Object.entries(TOOL_PROFILES).map(([name, tools]) =>
-      `• ${name} (${tools.size} tools): ${Array.from(tools).slice(0, 6).join(', ')}${tools.size > 6 ? '...' : ''}`
-    );
-    const essentialSize = TOOL_PROFILES.essential.size;
-    return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '150' : profileFilter?.size || '150'} tools)\n\nRecommended: essential (${essentialSize} tools) - identity, delegation, enforcement, commerce, reputation.\n\n${lines.join('\n')}\n\n• full (150 tools): All tools exposed (default)` }] };
-  }
-);
+server.registerTool("list_profiles", { description: "Show available tool profiles. Set APS_PROFILE env var to limit exposed tools (e.g. APS_PROFILE=data).", inputSchema: z.object({}) }, async () => {
+        const lines = Object.entries(TOOL_PROFILES).map(([name, tools]) =>
+          `• ${name} (${tools.size} tools): ${Array.from(tools).slice(0, 6).join(', ')}${tools.size > 6 ? '...' : ''}`
+        );
+        const essentialSize = TOOL_PROFILES.essential.size;
+        return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '150' : profileFilter?.size || '150'} tools)\n\nRecommended: essential (${essentialSize} tools) - identity, delegation, enforcement, commerce, reputation.\n\n${lines.join('\n')}\n\n• full (150 tools): All tools exposed (default)` }] };
+      });
 
 // ═══════════════════════════════════════
 // TOOL: list_tools_for_scope (Primitive #9: Tool Pool Assembly)
 // ═══════════════════════════════════════
 
-server.tool(
-  "list_tools_for_scope",
-  "List available MCP tools filtered by delegation scope. Pass your delegation scopes to see which tools you can use. Scopes: identity, delegation, principal, reputation, coordination, communication, governance, commerce, data, gateway, network, temporal, attribution, settlement, capability, mutual-auth. Use ['*'] for all tools.",
-  {
-    scopes: z.array(z.string()).describe("Your delegation scopes, e.g. ['identity', 'delegation', 'commerce']"),
-  },
-  async ({ scopes }) => {
-    const allTools = Object.entries(TOOL_SCOPE_MAP);
-    const scopeSet = new Set(scopes);
-    const filtered = allTools.filter(([_, scope]) =>
-      scope === '*' || scopeSet.has(scope) || scopeSet.has('*')
-    );
+server.registerTool("list_tools_for_scope", { description: "List available MCP tools filtered by delegation scope. Pass your delegation scopes to see which tools you can use. Scopes: identity, delegation, principal, reputation, coordination, communication, governance, commerce, data, gateway, network, temporal, attribution, settlement, capability, mutual-auth. Use ['*'] for all tools.", inputSchema: z.object({
+        scopes: z.array(z.string()).describe("Your delegation scopes, e.g. ['identity', 'delegation', 'commerce']"),
+      }) }, async ({ scopes }) => {
+        const allTools = Object.entries(TOOL_SCOPE_MAP);
+        const scopeSet = new Set(scopes);
+        const filtered = allTools.filter(([_, scope]) =>
+          scope === '*' || scopeSet.has(scope) || scopeSet.has('*')
+        );
 
-    // Group by scope for readability
-    const byScope: Record<string, string[]> = {};
-    for (const [name, scope] of filtered) {
-      (byScope[scope] ??= []).push(name);
-    }
+        // Group by scope for readability
+        const byScope: Record<string, string[]> = {};
+        for (const [name, scope] of filtered) {
+          (byScope[scope] ??= []).push(name);
+        }
 
-    return {
-      content: [{
-        type: "text",
-        text: JSON.stringify({
-          total_tools: allTools.length,
-          accessible_tools: filtered.length,
-          scopes_provided: scopes,
-          tools_by_scope: byScope,
-          tools: filtered.map(([name, scope]) => ({ name, scope })),
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              total_tools: allTools.length,
+              accessible_tools: filtered.length,
+              scopes_provided: scopes,
+              tools_by_scope: byScope,
+              tools: filtered.map(([name, scope]) => ({ name, scope })),
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // TOOL: identify
 // ═══════════════════════════════════════
 
-server.tool(
-  "identify",
-  "Identify yourself to the coordination server. Sets your role and scopes tools accordingly.",
-  {
-    public_key: z.string().describe("Your Ed25519 public key"),
-    private_key: z.string().describe("Your Ed25519 private key (for signing)"),
-    agent_id: z.string().optional().describe("Your agent ID"),
-  },
-  async (args) => {
-    recordBehavior('identify');
-    state.agentKey = args.public_key;
-    state.privateKey = args.private_key;
-    state.agentId = args.agent_id || null;
+server.registerTool("identify", { description: "Identify yourself to the coordination server. Sets your role and scopes tools accordingly.", inputSchema: z.object({
+        public_key: z.string().describe("Your Ed25519 public key"),
+        private_key: z.string().describe("Your Ed25519 private key (for signing)"),
+        agent_id: z.string().optional().describe("Your agent ID"),
+      }) }, async (args) => {
+        recordBehavior('identify');
+        state.agentKey = args.public_key;
+        state.privateKey = args.private_key;
+        state.agentId = args.agent_id || null;
 
-    // Look up role from task assignments
-    for (const [_, unit] of state.taskUnits) {
-      for (const assignment of unit.assignments) {
-        if (assignment.agentPublicKey === args.public_key) {
-          state.agentRole = assignment.role as CoordinationRole;
-          state.agentId = assignment.agentId;
+        // Look up role from task assignments
+        for (const [_, unit] of state.taskUnits) {
+          for (const assignment of unit.assignments) {
+            if (assignment.agentPublicKey === args.public_key) {
+              state.agentRole = assignment.role as CoordinationRole;
+              state.agentId = assignment.agentId;
+            }
+          }
         }
-      }
-    }
 
-    // Create session agent passport (reused by commerce and other tools)
-    state.sessionAgent = joinSocialContract({
-      name: state.agentId || args.public_key.slice(0, 12),
-      mission: 'MCP session agent',
-      owner: 'mcp-session',
-      capabilities: ['commerce:checkout', 'commerce:browse', 'coordination', 'agora'],
-      platform: 'node',
-      models: ['mcp'],
-    });
+        // Create session agent passport (reused by commerce and other tools)
+        state.sessionAgent = joinSocialContract({
+          name: state.agentId || args.public_key.slice(0, 12),
+          mission: 'MCP session agent',
+          owner: 'mcp-session',
+          capabilities: ['commerce:checkout', 'commerce:browse', 'coordination', 'agora'],
+          platform: 'node',
+          models: ['mcp'],
+        });
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          identified: true,
-          publicKey: state.agentKey.slice(0, 16) + '...',
-          role: state.agentRole || 'unassigned',
-          agentId: state.agentId,
-          note: state.agentRole
-            ? `You are assigned as ${state.agentRole}. Use get_my_role for your instructions.`
-            : 'No task assignment found. An operator needs to assign you a role first.',
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              identified: true,
+              publicKey: state.agentKey.slice(0, 16) + '...',
+              role: state.agentRole || 'unassigned',
+              agentId: state.agentId,
+              note: state.agentRole
+                ? `You are assigned as ${state.agentRole}. Use get_my_role for your instructions.`
+                : 'No task assignment found. An operator needs to assign you a role first.',
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // TOOL: generate_keys
 // ═══════════════════════════════════════
 
-server.tool(
-  "generate_keys",
-  "Generate an Ed25519 keypair for agent identity.",
-  {},
-  async () => {
-    const keys = generateKeyPair();
-    const isRemote = process.env.MCP_TRANSPORT === 'sse' || process.env.MCP_REMOTE === '1'
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          publicKey: keys.publicKey,
-          privateKey: isRemote ? '[REDACTED — use local MCP for key generation]' : keys.privateKey,
-          algorithm: "Ed25519",
-          note: isRemote
-            ? "WARNING: Private key redacted because this is a remote MCP server. Generate keys locally via stdio transport for security."
-            : "Use these with the identify tool or AGENT_KEY/AGENT_PRIVATE_KEY env vars. WARNING: Private keys should not be transmitted over remote transports.",
-        }, null, 2),
-      }],
-    };
-  }
-);
+server.registerTool("generate_keys", { description: "Generate an Ed25519 keypair for agent identity.", inputSchema: z.object({}) }, async () => {
+        const keys = generateKeyPair();
+        const isRemote = process.env.MCP_TRANSPORT === 'sse' || process.env.MCP_REMOTE === '1'
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              publicKey: keys.publicKey,
+              privateKey: isRemote ? '[REDACTED — use local MCP for key generation]' : keys.privateKey,
+              algorithm: "Ed25519",
+              note: isRemote
+                ? "WARNING: Private key redacted because this is a remote MCP server. Generate keys locally via stdio transport for security."
+                : "Use these with the identify tool or AGENT_KEY/AGENT_PRIVATE_KEY env vars. WARNING: Private keys should not be transmitted over remote transports.",
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // TOOL: issue_passport
 // ═══════════════════════════════════════
 
-server.tool(
-  "issue_passport",
-  "Issue a complete agent passport with keys, signed passport, attestation summary, and optional values floor in a single call. The server silently captures Tier 0 observed signals and computes a passport grade (0-3). Use this to onboard any agent — no npm install required.",
-  {
-    name: z.string().describe("Agent name (human-readable)"),
-    owner: z.string().describe("Owner/principal identifier"),
-    mission: z.string().optional().describe("Agent mission description"),
-    capabilities: z.array(z.string()).optional().describe("Agent capabilities (e.g., ['research', 'writing'])"),
-    attest_to_floor: z.boolean().optional().describe("If true, attests to the default values floor (F-001 through F-008)"),
-  },
-  async (args) => {
-    const issuanceStart = Date.now();
+server.registerTool("issue_passport", { description: "Issue a complete agent passport with keys, signed passport, attestation summary, and optional values floor in a single call. The server silently captures Tier 0 observed signals and computes a passport grade (0-3). Use this to onboard any agent — no npm install required.", inputSchema: z.object({
+        name: z.string().describe("Agent name (human-readable)"),
+        owner: z.string().describe("Owner/principal identifier"),
+        mission: z.string().optional().describe("Agent mission description"),
+        capabilities: z.array(z.string()).optional().describe("Agent capabilities (e.g., ['research', 'writing'])"),
+        attest_to_floor: z.boolean().optional().describe("If true, attests to the default values floor (F-001 through F-008)"),
+      }) }, async (args) => {
+        const issuanceStart = Date.now();
 
-    // Phase 0: Silent Observation — capture Tier 0 signals before processing
-    state.issuanceCount++;
-    const { createHash } = await import('crypto');
-    const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+        // Phase 0: Silent Observation — capture Tier 0 signals before processing
+        state.issuanceCount++;
+        const { createHash } = await import('crypto');
+        const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
-    const observed: Partial<ObservedContext> = {
-      transportType: process.env.MCP_TRANSPORT || 'stdio',
-      issuanceVelocity: state.issuanceCount,
-      requestPayloadFingerprint: sha256(JSON.stringify({
-        name: args.name, owner: args.owner,
-        mission: args.mission, capabilities: args.capabilities,
-      })),
-      mcpClientId: state.agentId || undefined,
-      connectionTimingMs: issuanceStart - (globalThis as any).__mcpStartTime || 0,
-    };
+        const observed: Partial<ObservedContext> = {
+          transportType: process.env.MCP_TRANSPORT || 'stdio',
+          issuanceVelocity: state.issuanceCount,
+          requestPayloadFingerprint: sha256(JSON.stringify({
+            name: args.name, owner: args.owner,
+            mission: args.mission, capabilities: args.capabilities,
+          })),
+          mcpClientId: state.agentId || undefined,
+          connectionTimingMs: issuanceStart - (globalThis as any).__mcpStartTime || 0,
+        };
 
-    // Create the passport (same as before)
-    const agent = joinSocialContract({
-      name: args.name,
-      mission: args.mission || 'General purpose agent',
-      owner: args.owner,
-      capabilities: args.capabilities || ['general'],
-      platform: 'mcp',
-      models: ['unknown'],
-      floor: args.attest_to_floor ? (state.floorYaml || DEFAULT_FLOOR_YAML) : undefined,
-    });
+        // Create the passport (same as before)
+        const agent = joinSocialContract({
+          name: args.name,
+          mission: args.mission || 'General purpose agent',
+          owner: args.owner,
+          capabilities: args.capabilities || ['general'],
+          platform: 'mcp',
+          models: ['unknown'],
+          floor: args.attest_to_floor ? (state.floorYaml || DEFAULT_FLOOR_YAML) : undefined,
+        });
 
-    // Countersign with AEOESS issuer key if available (CA model)
-    const hasIssuer = !!AEOESS_ISSUER_PRIVATE_KEY;
-    const passport = hasIssuer
-      ? countersignPassport(agent.passport, AEOESS_ISSUER_PRIVATE_KEY!, 'aeoess')
-      : agent.passport;
+        // Countersign with AEOESS issuer key if available (CA model)
+        const hasIssuer = !!AEOESS_ISSUER_PRIVATE_KEY;
+        const passport = hasIssuer
+          ? countersignPassport(agent.passport, AEOESS_ISSUER_PRIVATE_KEY!, 'aeoess')
+          : agent.passport;
 
-    // Phase 4: Derive issuance context with computed signals
-    const evidence = createEmptyEvidenceRecord(observed);
-    const issuanceAgeMs = Date.now() - ((globalThis as any).__mcpStartTime || Date.now());
-    const derivedSignals = [
-      { key: 'issuance_age_ms', value: String(issuanceAgeMs), derivedFrom: ['serverStartTime', 'requestedAt'], computedAt: new Date().toISOString() },
-      { key: 'session_passport_count', value: String(state.issuanceCount), derivedFrom: ['issuanceCount'], computedAt: new Date().toISOString() },
-    ];
-    const context = createIssuanceContext(evidence, {
-      hasIssuerSignature: hasIssuer,
-      derivedSignals,
-    });
+        // Phase 4: Derive issuance context with computed signals
+        const evidence = createEmptyEvidenceRecord(observed);
+        const issuanceAgeMs = Date.now() - ((globalThis as any).__mcpStartTime || Date.now());
+        const derivedSignals = [
+          { key: 'issuance_age_ms', value: String(issuanceAgeMs), derivedFrom: ['serverStartTime', 'requestedAt'], computedAt: new Date().toISOString() },
+          { key: 'session_passport_count', value: String(state.issuanceCount), derivedFrom: ['issuanceCount'], computedAt: new Date().toISOString() },
+        ];
+        const context = createIssuanceContext(evidence, {
+          hasIssuerSignature: hasIssuer,
+          derivedSignals,
+        });
 
-    // Phase 5: Bind attestation to passport
-    const attestedPassport = bindAttestation(passport, context);
+        // Phase 5: Bind attestation to passport
+        const attestedPassport = bindAttestation(passport, context);
 
-    // Store the issuance context (server-side memory)
-    const passportId = passport.passport.agentId;
-    state.issuanceContexts.set(passportId, context);
-    state.recentlyIssuedPassports.add(passportId);
-    state.issuanceTimestamps.set(passportId, Date.now());
-    // Initialize behavioral sequence tracking for this agent
-    state.postIssuanceBehavior.set(passportId, [{ tool: 'issue_passport', ts: new Date().toISOString() }]);
+        // Store the issuance context (server-side memory)
+        const passportId = passport.passport.agentId;
+        state.issuanceContexts.set(passportId, context);
+        state.recentlyIssuedPassports.add(passportId);
+        state.issuanceTimestamps.set(passportId, Date.now());
+        // Initialize behavioral sequence tracking for this agent
+        state.postIssuanceBehavior.set(passportId, [{ tool: 'issue_passport', ts: new Date().toISOString() }]);
 
-    // Bridge: fire-and-forget POST to gateway (if configured)
-    // When Mini adds POST /issuance-dossier, this data starts flowing automatically.
-    const gwUrl = process.env.AEOESS_GATEWAY_URL  // e.g. https://gateway.aeoess.com
-    const gwKey = process.env.AEOESS_GATEWAY_KEY   // e.g. aps_live_...
-    if (gwUrl && gwKey) {
-      fetch(`${gwUrl}/api/v1/issuance-dossier`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${gwKey}` },
-        body: JSON.stringify({
-          passport_id: passportId,
-          public_key_hash: sha256(attestedPassport.passport.publicKey),
-          passport_grade: context.assessment.passportGrade,
-          flags: context.assessment.flags,
-          attestation_bundle_hash: context.assessment.attestationBundleHash,
-          observed_context: context.evidence.observed,
-          runtime_attestations: context.evidence.runtimeAttestations,
-          provider_attestations: context.evidence.providerAttestations,
-          self_declared_signals: context.evidence.selfDeclaredSignals,
-          derived_signals: context.assessment.derivedSignals || [],
-          prior_passport_ref: context.evidence.priorPassportRef || null,
-        }),
-      }).catch(() => {}) // fire-and-forget: never block passport issuance
-    }
+        // Bridge: fire-and-forget POST to gateway (if configured)
+        // When Mini adds POST /issuance-dossier, this data starts flowing automatically.
+        const gwUrl = process.env.AEOESS_GATEWAY_URL  // e.g. https://gateway.aeoess.com
+        const gwKey = process.env.AEOESS_GATEWAY_KEY   // e.g. aps_live_...
+        if (gwUrl && gwKey) {
+          fetch(`${gwUrl}/api/v1/issuance-dossier`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${gwKey}` },
+            body: JSON.stringify({
+              passport_id: passportId,
+              public_key_hash: sha256(attestedPassport.passport.publicKey),
+              passport_grade: context.assessment.passportGrade,
+              flags: context.assessment.flags,
+              attestation_bundle_hash: context.assessment.attestationBundleHash,
+              observed_context: context.evidence.observed,
+              runtime_attestations: context.evidence.runtimeAttestations,
+              provider_attestations: context.evidence.providerAttestations,
+              self_declared_signals: context.evidence.selfDeclaredSignals,
+              derived_signals: context.assessment.derivedSignals || [],
+              prior_passport_ref: context.evidence.priorPassportRef || null,
+            }),
+          }).catch(() => {}) // fire-and-forget: never block passport issuance
+        }
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          passport: attestedPassport,
-          publicKey: attestedPassport.passport.publicKey,
-          privateKey: (process.env.MCP_TRANSPORT === 'sse' || process.env.MCP_REMOTE === '1')
-            ? '[REDACTED — use local MCP for key generation]'
-            : agent.keyPair.privateKey,
-          agentId: attestedPassport.passport.agentId,
-          attestation: agent.attestation || null,
-          passportAttestation: attestedPassport.attestation,
-          passportGrade: context.assessment.passportGrade,
-          passportGradeLabel: PASSPORT_GRADE_LABELS[context.assessment.passportGrade],
-          did: `did:aps:${attestedPassport.passport.publicKey}`,
-          issuerVerified: !!attestedPassport.issuerSignature,
-          issuerPublicKey: AEOESS_ISSUER_PUBLIC_KEY,
-          note: attestedPassport.issuerSignature
-            ? `Grade ${context.assessment.passportGrade} passport (${PASSPORT_GRADE_LABELS[context.assessment.passportGrade]}). Countersigned by AEOESS.`
-            : `Grade ${context.assessment.passportGrade} passport (${PASSPORT_GRADE_LABELS[context.assessment.passportGrade]}). Self-signed (issuer key not configured).`,
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              passport: attestedPassport,
+              publicKey: attestedPassport.passport.publicKey,
+              privateKey: (process.env.MCP_TRANSPORT === 'sse' || process.env.MCP_REMOTE === '1')
+                ? '[REDACTED — use local MCP for key generation]'
+                : agent.keyPair.privateKey,
+              agentId: attestedPassport.passport.agentId,
+              attestation: agent.attestation || null,
+              passportAttestation: attestedPassport.attestation,
+              passportGrade: context.assessment.passportGrade,
+              passportGradeLabel: PASSPORT_GRADE_LABELS[context.assessment.passportGrade],
+              did: `did:aps:${attestedPassport.passport.publicKey}`,
+              issuerVerified: !!attestedPassport.issuerSignature,
+              issuerPublicKey: AEOESS_ISSUER_PUBLIC_KEY,
+              note: attestedPassport.issuerSignature
+                ? `Grade ${context.assessment.passportGrade} passport (${PASSPORT_GRADE_LABELS[context.assessment.passportGrade]}). Countersigned by AEOESS.`
+                : `Grade ${context.assessment.passportGrade} passport (${PASSPORT_GRADE_LABELS[context.assessment.passportGrade]}). Self-signed (issuer key not configured).`,
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // TOOL: verify_issuer
 // ═══════════════════════════════════════
 
-server.tool(
-  "verify_issuer",
-  "Verify that a passport was officially issued by AEOESS. Checks the issuer countersignature against the published AEOESS public key. Returns false for self-signed passports.",
-  {
-    passport: z.object({
-      passport: z.any(),
-      signature: z.string(),
-      signedAt: z.string(),
-      issuerSignature: z.object({
-        issuerId: z.string(),
-        issuerPublicKey: z.string(),
-        signature: z.string(),
-        signedAt: z.string(),
-      }).optional(),
-    }).describe("The signed passport object to verify"),
-  },
-  async (args) => {
-    const sp = args.passport as any;
-    const hasIssuerSig = isIssuerVerified(sp);
-    const isValid = hasIssuerSig ? verifyIssuerSignature(sp, AEOESS_ISSUER_PUBLIC_KEY) : false;
+server.registerTool("verify_issuer", { description: "Verify that a passport was officially issued by AEOESS. Checks the issuer countersignature against the published AEOESS public key. Returns false for self-signed passports.", inputSchema: z.object({
+        passport: z.object({
+          passport: z.any(),
+          signature: z.string(),
+          signedAt: z.string(),
+          issuerSignature: z.object({
+            issuerId: z.string(),
+            issuerPublicKey: z.string(),
+            signature: z.string(),
+            signedAt: z.string(),
+          }).optional(),
+        }).describe("The signed passport object to verify"),
+      }) }, async (args) => {
+        const sp = args.passport as any;
+        const hasIssuerSig = isIssuerVerified(sp);
+        const isValid = hasIssuerSig ? verifyIssuerSignature(sp, AEOESS_ISSUER_PUBLIC_KEY) : false;
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          verified: isValid,
-          hasIssuerSignature: hasIssuerSig,
-          issuerId: sp.issuerSignature?.issuerId || null,
-          issuerPublicKey: AEOESS_ISSUER_PUBLIC_KEY,
-          agentId: sp.passport?.agentId || null,
-          note: isValid
-            ? "This passport was officially issued by AEOESS."
-            : hasIssuerSig
-              ? "Passport has an issuer signature but it does NOT match AEOESS. Do not trust."
-              : "This passport is self-signed. It was NOT issued through official AEOESS infrastructure.",
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              verified: isValid,
+              hasIssuerSignature: hasIssuerSig,
+              issuerId: sp.issuerSignature?.issuerId || null,
+              issuerPublicKey: AEOESS_ISSUER_PUBLIC_KEY,
+              agentId: sp.passport?.agentId || null,
+              note: isValid
+                ? "This passport was officially issued by AEOESS."
+                : hasIssuerSig
+                  ? "Passport has an issuer signature but it does NOT match AEOESS. Do not trust."
+                  : "This passport is self-signed. It was NOT issued through official AEOESS infrastructure.",
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // TOOL: get_passport_grade
 // ═══════════════════════════════════════
 
-server.tool(
-  "get_passport_grade",
-  "Query the attestation grade and issuance context for a passport. Returns the passport grade (0-3), flags, and evidence summary. Grade 0 = self-signed, 1 = issuer countersigned, 2 = runtime-bound, 3 = principal-bound. This is the partner-facing trust query.",
-  {
-    agent_id: z.string().describe("The agent ID of the passport to query"),
-  },
-  async (args) => {
-    const context = state.issuanceContexts.get(args.agent_id);
-    if (!context) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            found: false,
-            agent_id: args.agent_id,
-            note: "No issuance record found for this agent. The passport may have been issued before attestation tracking was enabled, or on a different server instance.",
-          }, null, 2),
-        }],
-      };
-    }
+server.registerTool("get_passport_grade", { description: "Query the attestation grade and issuance context for a passport. Returns the passport grade (0-3), flags, and evidence summary. Grade 0 = self-signed, 1 = issuer countersigned, 2 = runtime-bound, 3 = principal-bound. This is the partner-facing trust query.", inputSchema: z.object({
+        agent_id: z.string().describe("The agent ID of the passport to query"),
+      }) }, async (args) => {
+        const context = state.issuanceContexts.get(args.agent_id);
+        if (!context) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                found: false,
+                agent_id: args.agent_id,
+                note: "No issuance record found for this agent. The passport may have been issued before attestation tracking was enabled, or on a different server instance.",
+              }, null, 2),
+            }],
+          };
+        }
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          found: true,
-          agent_id: args.agent_id,
-          passportGrade: context.assessment.passportGrade,
-          passportGradeLabel: PASSPORT_GRADE_LABELS[context.assessment.passportGrade],
-          flags: context.assessment.flags,
-          attestationBundleHash: context.assessment.attestationBundleHash,
-          assessedAt: context.assessment.assessedAt,
-          evidenceSummary: {
-            hasRuntimeAttestation: context.evidence.runtimeAttestations.length > 0,
-            hasProviderAttestation: context.evidence.providerAttestations.length > 0,
-            selfDeclaredSignalCount: context.evidence.selfDeclaredSignals.length,
-            hasPriorPassport: !!context.evidence.priorPassportRef,
-            hasContinuityProof: !!context.evidence.priorContinuityProof,
-            observedTransport: context.evidence.observed.transportType || null,
-            issuanceVelocity: context.evidence.observed.issuanceVelocity || null,
-          },
-          derivedSignals: context.assessment.derivedSignals || [],
-          gradeHistory: context.assessment.gradeHistory || [],
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              found: true,
+              agent_id: args.agent_id,
+              passportGrade: context.assessment.passportGrade,
+              passportGradeLabel: PASSPORT_GRADE_LABELS[context.assessment.passportGrade],
+              flags: context.assessment.flags,
+              attestationBundleHash: context.assessment.attestationBundleHash,
+              assessedAt: context.assessment.assessedAt,
+              evidenceSummary: {
+                hasRuntimeAttestation: context.evidence.runtimeAttestations.length > 0,
+                hasProviderAttestation: context.evidence.providerAttestations.length > 0,
+                selfDeclaredSignalCount: context.evidence.selfDeclaredSignals.length,
+                hasPriorPassport: !!context.evidence.priorPassportRef,
+                hasContinuityProof: !!context.evidence.priorContinuityProof,
+                observedTransport: context.evidence.observed.transportType || null,
+                issuanceVelocity: context.evidence.observed.issuanceVelocity || null,
+              },
+              derivedSignals: context.assessment.derivedSignals || [],
+              gradeHistory: context.assessment.gradeHistory || [],
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // TOOL: list_issuance_records
 // ═══════════════════════════════════════
 
-server.tool(
-  "list_issuance_records",
-  "List all stored issuance records with their passport grades. Shows how many passports have been issued in this session and their trust posture. Useful for monitoring issuance patterns.",
-  {},
-  async () => {
-    const records = Array.from(state.issuanceContexts.entries()).map(([agentId, ctx]) => ({
-      agentId,
-      grade: ctx.assessment.passportGrade,
-      gradeLabel: PASSPORT_GRADE_LABELS[ctx.assessment.passportGrade],
-      flags: ctx.assessment.flags,
-      issuedAt: ctx.evidence.requestedAt,
-    }));
+server.registerTool("list_issuance_records", { description: "List all stored issuance records with their passport grades. Shows how many passports have been issued in this session and their trust posture. Useful for monitoring issuance patterns.", inputSchema: z.object({}) }, async () => {
+        const records = Array.from(state.issuanceContexts.entries()).map(([agentId, ctx]) => ({
+          agentId,
+          grade: ctx.assessment.passportGrade,
+          gradeLabel: PASSPORT_GRADE_LABELS[ctx.assessment.passportGrade],
+          flags: ctx.assessment.flags,
+          issuedAt: ctx.evidence.requestedAt,
+        }));
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          totalIssued: records.length,
-          sessionVelocity: state.issuanceCount,
-          records,
-          gradeDistribution: {
-            grade0: records.filter(r => r.grade === 0).length,
-            grade1: records.filter(r => r.grade === 1).length,
-            grade2: records.filter(r => r.grade === 2).length,
-            grade3: records.filter(r => r.grade === 3).length,
-          },
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              totalIssued: records.length,
+              sessionVelocity: state.issuanceCount,
+              records,
+              gradeDistribution: {
+                grade0: records.filter(r => r.grade === 0).length,
+                grade1: records.filter(r => r.grade === 1).length,
+                grade2: records.filter(r => r.grade === 2).length,
+                grade3: records.filter(r => r.grade === 3).length,
+              },
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // TOOL: get_behavioral_sequence
 // ═══════════════════════════════════════
 
-server.tool(
-  "get_behavioral_sequence",
-  "Get the post-issuance behavioral sequence for an agent. Shows the first 10 tool calls after passport issuance. Real agents do work. Farming agents extract. This is consilium signal #2.",
-  {
-    agent_id: z.string().describe("The agent ID to query"),
-  },
-  async (args) => {
-    const sequence = state.postIssuanceBehavior.get(args.agent_id);
-    if (!sequence || sequence.length === 0) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            agent_id: args.agent_id,
-            found: false,
-            note: "No behavioral sequence recorded. Agent may have been issued before tracking was enabled.",
-          }, null, 2),
-        }],
-      };
-    }
+server.registerTool("get_behavioral_sequence", { description: "Get the post-issuance behavioral sequence for an agent. Shows the first 10 tool calls after passport issuance. Real agents do work. Farming agents extract. This is consilium signal #2.", inputSchema: z.object({
+        agent_id: z.string().describe("The agent ID to query"),
+      }) }, async (args) => {
+        const sequence = state.postIssuanceBehavior.get(args.agent_id);
+        if (!sequence || sequence.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                agent_id: args.agent_id,
+                found: false,
+                note: "No behavioral sequence recorded. Agent may have been issued before tracking was enabled.",
+              }, null, 2),
+            }],
+          };
+        }
 
-    // Classify the behavioral pattern
-    const toolNames = sequence.map(s => s.tool);
-    const hasWork = toolNames.some(t => ['submit_evidence', 'create_agora_message', 'submit_deliverable'].includes(t));
-    const hasExtraction = toolNames.some(t => ['commerce_preflight', 'create_checkout'].includes(t));
-    const pattern = hasWork ? 'productive' : hasExtraction ? 'extractive' : 'neutral';
+        // Classify the behavioral pattern
+        const toolNames = sequence.map(s => s.tool);
+        const hasWork = toolNames.some(t => ['submit_evidence', 'create_agora_message', 'submit_deliverable'].includes(t));
+        const hasExtraction = toolNames.some(t => ['commerce_preflight', 'create_checkout'].includes(t));
+        const pattern = hasWork ? 'productive' : hasExtraction ? 'extractive' : 'neutral';
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          agent_id: args.agent_id,
-          found: true,
-          sequence_length: sequence.length,
-          max_tracked: MAX_BEHAVIORAL_SEQUENCE,
-          pattern,
-          tools_called: toolNames,
-          sequence,
-          note: pattern === 'extractive'
-            ? "Agent's first actions after passport were value extraction (commerce). Farming signal."
-            : pattern === 'productive'
-              ? "Agent's first actions after passport were productive work. Healthy pattern."
-              : "Neutral pattern — identity/delegation setup.",
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              agent_id: args.agent_id,
+              found: true,
+              sequence_length: sequence.length,
+              max_tracked: MAX_BEHAVIORAL_SEQUENCE,
+              pattern,
+              tools_called: toolNames,
+              sequence,
+              note: pattern === 'extractive'
+                ? "Agent's first actions after passport were value extraction (commerce). Farming signal."
+                : pattern === 'productive'
+                  ? "Agent's first actions after passport were productive work. Healthy pattern."
+                  : "Neutral pattern — identity/delegation setup.",
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // TOOL: get_my_role
 // ═══════════════════════════════════════
 
-server.tool(
-  "get_my_role",
-  "Get your current role, assigned tasks, and role-specific instructions.",
-  {},
-  async () => {
-    if (!state.agentRole) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            role: null,
-            message: 'You have no role assigned. An operator must assign you to a task first.',
-          }, null, 2),
-        }],
-      };
-    }
+server.registerTool("get_my_role", { description: "Get your current role, assigned tasks, and role-specific instructions.", inputSchema: z.object({}) }, async () => {
+        if (!state.agentRole) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                role: null,
+                message: 'You have no role assigned. An operator must assign you to a task first.',
+              }, null, 2),
+            }],
+          };
+        }
 
-    const instructions = ROLE_PROMPTS[state.agentRole] || ROLE_PROMPTS['default'];
+        const instructions = ROLE_PROMPTS[state.agentRole] || ROLE_PROMPTS['default'];
 
-    // Find my active tasks
-    const myTasks: any[] = [];
-    for (const [taskId, unit] of state.taskUnits) {
-      const myAssignment = unit.assignments.find(a => a.agentPublicKey === state.agentKey);
-      if (myAssignment) {
-        myTasks.push({
-          taskId,
-          title: unit.brief.title,
-          role: myAssignment.role,
-          status: getTaskStatus(unit),
-          accepted: !!myAssignment.acceptedAt,
-        });
-      }
-    }
+        // Find my active tasks
+        const myTasks: any[] = [];
+        for (const [taskId, unit] of state.taskUnits) {
+          const myAssignment = unit.assignments.find(a => a.agentPublicKey === state.agentKey);
+          if (myAssignment) {
+            myTasks.push({
+              taskId,
+              title: unit.brief.title,
+              role: myAssignment.role,
+              status: getTaskStatus(unit),
+              accepted: !!myAssignment.acceptedAt,
+            });
+          }
+        }
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          role: state.agentRole,
-          agentId: state.agentId,
-          tasks: myTasks,
-          instructions,
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              role: state.agentRole,
+              agentId: state.agentId,
+              tasks: myTasks,
+              instructions,
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // Role-Specific Instructions
@@ -1534,1742 +1488,1537 @@ YOU MUST NOT: Modify deliverables directly. Report issues to the operator.`,
 // OPERATOR TOOLS
 // ═══════════════════════════════════════
 
-server.tool(
-  "create_task_brief",
-  "[OPERATOR] Create a new task with roles, deliverables, and acceptance criteria.",
-  {
-    title: z.string().describe("Task title"),
-    description: z.string().describe("What needs to be done"),
-    roles: z.array(z.object({
-      role: z.string().describe("Role name (researcher, analyst, builder, reviewer, or custom)"),
-      description: z.string().describe("What this role does"),
-      allowed_scopes: z.array(z.string()).describe("What this role CAN do"),
-      forbidden_scopes: z.array(z.string()).describe("What this role CANNOT do"),
-      required_capabilities: z.array(z.string()).optional().describe("Agent must have these capabilities"),
-    })).describe("Roles needed for this task"),
-    deliverables: z.array(z.object({
-      name: z.string(),
-      description: z.string(),
-      format: z.string(),
-      produced_by: z.string().describe("Which role produces this"),
-    })).describe("Expected outputs"),
-    acceptance_criteria: z.array(z.string()).describe("What 'done' looks like"),
-    deadline: z.string().optional().describe("ISO 8601 deadline"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+server.registerTool("create_task_brief", { description: "[OPERATOR] Create a new task with roles, deliverables, and acceptance criteria.", inputSchema: z.object({
+        title: z.string().describe("Task title"),
+        description: z.string().describe("What needs to be done"),
+        roles: z.array(z.object({
+          role: z.string().describe("Role name (researcher, analyst, builder, reviewer, or custom)"),
+          description: z.string().describe("What this role does"),
+          allowed_scopes: z.array(z.string()).describe("What this role CAN do"),
+          forbidden_scopes: z.array(z.string()).describe("What this role CANNOT do"),
+          required_capabilities: z.array(z.string()).optional().describe("Agent must have these capabilities"),
+        })).describe("Roles needed for this task"),
+        deliverables: z.array(z.object({
+          name: z.string(),
+          description: z.string(),
+          format: z.string(),
+          produced_by: z.string().describe("Which role produces this"),
+        })).describe("Expected outputs"),
+        acceptance_criteria: z.array(z.string()).describe("What 'done' looks like"),
+        deadline: z.string().optional().describe("ISO 8601 deadline"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-    const brief = createTaskBrief({
-      title: args.title,
-      description: args.description,
-      operatorPublicKey: state.agentKey!,
-      operatorPrivateKey: state.privateKey!,
-      roles: args.roles.map(r => ({
-        role: r.role,
-        description: r.description,
-        allowedScopes: r.allowed_scopes,
-        forbiddenScopes: r.forbidden_scopes,
-        requiredCapabilities: r.required_capabilities,
-      })),
-      deliverables: args.deliverables.map(d => ({
-        name: d.name,
-        description: d.description,
-        format: d.format,
-        producedBy: d.produced_by,
-      })),
-      acceptanceCriteria: args.acceptance_criteria,
-      deadline: args.deadline,
-    });
+        const brief = createTaskBrief({
+          title: args.title,
+          description: args.description,
+          operatorPublicKey: state.agentKey!,
+          operatorPrivateKey: state.privateKey!,
+          roles: args.roles.map(r => ({
+            role: r.role,
+            description: r.description,
+            allowedScopes: r.allowed_scopes,
+            forbiddenScopes: r.forbidden_scopes,
+            requiredCapabilities: r.required_capabilities,
+          })),
+          deliverables: args.deliverables.map(d => ({
+            name: d.name,
+            description: d.description,
+            format: d.format,
+            producedBy: d.produced_by,
+          })),
+          acceptanceCriteria: args.acceptance_criteria,
+          deadline: args.deadline,
+        });
 
-    const unit = createTaskUnit(brief);
-    state.taskUnits.set(brief.taskId, unit);
-    saveTasks();
+        const unit = createTaskUnit(brief);
+        state.taskUnits.set(brief.taskId, unit);
+        saveTasks();
 
-    // Bridge → Agora: announce task creation
-    emitAgoraEvent('task_created', brief.taskId,
-      `Task "${brief.title}" created with ${brief.roles.length} roles and ${brief.deliverables.length} deliverables. ${brief.description}`);
+        // Bridge → Agora: announce task creation
+        emitAgoraEvent('task_created', brief.taskId,
+          `Task "${brief.title}" created with ${brief.roles.length} roles and ${brief.deliverables.length} deliverables. ${brief.description}`);
 
-    // Set this agent as operator
-    state.agentRole = 'operator';
+        // Set this agent as operator
+        state.agentRole = 'operator';
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          taskId: brief.taskId,
-          title: brief.title,
-          roles: brief.roles.map(r => r.role),
-          deliverables: brief.deliverables.map(d => d.name),
-          status: 'draft',
-          note: 'Task created. Now assign agents to each role with assign_agent.',
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              taskId: brief.taskId,
+              title: brief.title,
+              roles: brief.roles.map(r => r.role),
+              deliverables: brief.deliverables.map(d => d.name),
+              status: 'draft',
+              note: 'Task created. Now assign agents to each role with assign_agent.',
+            }, null, 2),
+          }],
+        };
+      });
 
-server.tool(
-  "assign_agent",
-  "[OPERATOR] Assign an agent to a role in a task. Creates a delegation automatically.",
-  {
-    task_id: z.string().describe("Task ID"),
-    role: z.string().describe("Role to assign"),
-    agent_id: z.string().describe("Agent ID"),
-    agent_public_key: z.string().describe("Agent's Ed25519 public key"),
-    scope: z.array(z.string()).describe("Delegation scopes"),
-    spend_limit: z.number().default(500).describe("Max spend"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+server.registerTool("assign_agent", { description: "[OPERATOR] Assign an agent to a role in a task. Creates a delegation automatically.", inputSchema: z.object({
+        task_id: z.string().describe("Task ID"),
+        role: z.string().describe("Role to assign"),
+        agent_id: z.string().describe("Agent ID"),
+        agent_public_key: z.string().describe("Agent's Ed25519 public key"),
+        scope: z.array(z.string()).describe("Delegation scopes"),
+        spend_limit: z.number().default(500).describe("Max spend"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-    const unit = state.taskUnits.get(args.task_id);
-    if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+        const unit = state.taskUnits.get(args.task_id);
+        if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
 
-    // Create delegation for this role
-    const delegation = createDelegation({
-      delegatedBy: state.agentKey!,
-      delegatedTo: args.agent_public_key,
-      scope: args.scope,
-      spendLimit: args.spend_limit,
-      maxDepth: 1,
-      expiresInHours: 24,
-      privateKey: state.privateKey!,
-    });
+        // Create delegation for this role
+        const delegation = createDelegation({
+          delegatedBy: state.agentKey!,
+          delegatedTo: args.agent_public_key,
+          scope: args.scope,
+          spendLimit: args.spend_limit,
+          maxDepth: 1,
+          expiresInHours: 24,
+          privateKey: state.privateKey!,
+        });
 
-    const { assignment, updatedBrief } = assignTask({
-      brief: unit.brief,
-      role: args.role,
-      agentId: args.agent_id,
-      agentPublicKey: args.agent_public_key,
-      delegationId: delegation.delegationId,
-      operatorPrivateKey: state.privateKey!,
-    });
-
-    unit.brief = updatedBrief;
-    unit.assignments.push(assignment);
-    saveTasks();
-
-    // Bridge → Agora: announce assignment
-    emitAgoraEvent('task_assigned', args.task_id,
-      `Agent ${args.agent_id} assigned as ${args.role} with delegation ${delegation.delegationId}.`);
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          assignmentId: assignment.assignmentId,
+        const { assignment, updatedBrief } = assignTask({
+          brief: unit.brief,
           role: args.role,
           agentId: args.agent_id,
+          agentPublicKey: args.agent_public_key,
           delegationId: delegation.delegationId,
-          scope: args.scope,
-          taskStatus: getTaskStatus(unit),
-          note: `Agent ${args.agent_id} assigned as ${args.role}. They need to call accept_assignment.`,
-        }, null, 2),
-      }],
-    };
-  }
-);
+          operatorPrivateKey: state.privateKey!,
+        });
 
-server.tool(
-  "review_evidence",
-  "[OPERATOR] Review an evidence packet. Score it and approve, rework, or reject.",
-  {
-    task_id: z.string().describe("Task ID"),
-    packet_id: z.string().describe("Evidence packet ID to review"),
-    verdict: z.enum(["approve", "rework", "reject"]).describe("Your verdict"),
-    score: z.number().min(0).max(100).describe("Quality score 0-100"),
-    threshold: z.number().default(70).describe("Minimum passing score"),
-    rationale: z.string().describe("Why this verdict"),
-    issues: z.array(z.object({
-      claim_id: z.string(),
-      issue: z.string(),
-      severity: z.enum(["critical", "major", "minor"]),
-    })).optional().describe("Specific issues found"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        unit.brief = updatedBrief;
+        unit.assignments.push(assignment);
+        saveTasks();
 
-    const unit = state.taskUnits.get(args.task_id);
-    if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+        // Bridge → Agora: announce assignment
+        emitAgoraEvent('task_assigned', args.task_id,
+          `Agent ${args.agent_id} assigned as ${args.role} with delegation ${delegation.delegationId}.`);
 
-    const packet = unit.evidencePackets.find(p => p.packetId === args.packet_id);
-    if (!packet) return { content: [{ type: "text" as const, text: `Packet ${args.packet_id} not found.` }], isError: true };
-
-    try {
-      const review = reviewEvidence({
-        taskId: args.task_id,
-        packet,
-        reviewerPublicKey: state.agentKey!,
-        reviewerPrivateKey: state.privateKey!,
-        verdict: args.verdict,
-        score: args.score,
-        threshold: args.threshold,
-        rationale: args.rationale,
-        issues: args.issues?.map(i => ({ claimId: i.claim_id, issue: i.issue, severity: i.severity })),
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              assignmentId: assignment.assignmentId,
+              role: args.role,
+              agentId: args.agent_id,
+              delegationId: delegation.delegationId,
+              scope: args.scope,
+              taskStatus: getTaskStatus(unit),
+              note: `Agent ${args.agent_id} assigned as ${args.role}. They need to call accept_assignment.`,
+            }, null, 2),
+          }],
+        };
       });
 
-      unit.reviews.push(review);
-      saveTasks();
+server.registerTool("review_evidence", { description: "[OPERATOR] Review an evidence packet. Score it and approve, rework, or reject.", inputSchema: z.object({
+        task_id: z.string().describe("Task ID"),
+        packet_id: z.string().describe("Evidence packet ID to review"),
+        verdict: z.enum(["approve", "rework", "reject"]).describe("Your verdict"),
+        score: z.number().min(0).max(100).describe("Quality score 0-100"),
+        threshold: z.number().default(70).describe("Minimum passing score"),
+        rationale: z.string().describe("Why this verdict"),
+        issues: z.array(z.object({
+          claim_id: z.string(),
+          issue: z.string(),
+          severity: z.enum(["critical", "major", "minor"]),
+        })).optional().describe("Specific issues found"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-      // Bridge → Agora: announce review result
-      emitAgoraEvent('review_completed', args.task_id,
-        `Review verdict: ${review.verdict} (score: ${review.score}/${review.threshold}). ${review.rationale}`);
+        const unit = state.taskUnits.get(args.task_id);
+        if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            reviewId: review.reviewId,
-            verdict: review.verdict,
-            score: review.score,
-            threshold: review.threshold,
-            issueCount: review.issues?.length || 0,
-            note: review.verdict === 'approve'
-              ? 'Evidence approved. Use handoff_evidence to pass to analyst.'
-              : 'Evidence needs rework. Researcher must resubmit.',
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Error", e) }], isError: true };
-    }
-  }
-);
+        const packet = unit.evidencePackets.find(p => p.packetId === args.packet_id);
+        if (!packet) return { content: [{ type: "text" as const, text: `Packet ${args.packet_id} not found.` }], isError: true };
 
-server.tool(
-  "handoff_evidence",
-  "[OPERATOR] Transfer approved evidence from researcher to analyst.",
-  {
-    task_id: z.string().describe("Task ID"),
-    packet_id: z.string().describe("Approved evidence packet ID"),
-    review_id: z.string().describe("Review ID that approved it"),
-    to_role: z.string().describe("Destination role (e.g. analyst)"),
-    to_agent_key: z.string().describe("Destination agent's public key"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        try {
+          const review = reviewEvidence({
+            taskId: args.task_id,
+            packet,
+            reviewerPublicKey: state.agentKey!,
+            reviewerPrivateKey: state.privateKey!,
+            verdict: args.verdict,
+            score: args.score,
+            threshold: args.threshold,
+            rationale: args.rationale,
+            issues: args.issues?.map(i => ({ claimId: i.claim_id, issue: i.issue, severity: i.severity })),
+          });
 
-    const unit = state.taskUnits.get(args.task_id);
-    if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+          unit.reviews.push(review);
+          saveTasks();
 
-    const packet = unit.evidencePackets.find(p => p.packetId === args.packet_id);
-    const review = unit.reviews.find(r => r.reviewId === args.review_id);
-    if (!packet || !review) return { content: [{ type: "text" as const, text: 'Packet or review not found.' }], isError: true };
+          // Bridge → Agora: announce review result
+          emitAgoraEvent('review_completed', args.task_id,
+            `Review verdict: ${review.verdict} (score: ${review.score}/${review.threshold}). ${review.rationale}`);
 
-    try {
-      const handoff = handoffEvidence({
-        taskId: args.task_id,
-        packet,
-        review,
-        fromRole: 'researcher',
-        toRole: args.to_role,
-        toAgentPublicKey: args.to_agent_key,
-        operatorPrivateKey: state.privateKey!,
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                reviewId: review.reviewId,
+                verdict: review.verdict,
+                score: review.score,
+                threshold: review.threshold,
+                issueCount: review.issues?.length || 0,
+                note: review.verdict === 'approve'
+                  ? 'Evidence approved. Use handoff_evidence to pass to analyst.'
+                  : 'Evidence needs rework. Researcher must resubmit.',
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Error", e) }], isError: true };
+        }
       });
 
-      unit.handoffs.push(handoff);
-      saveTasks();
+server.registerTool("handoff_evidence", { description: "[OPERATOR] Transfer approved evidence from researcher to analyst.", inputSchema: z.object({
+        task_id: z.string().describe("Task ID"),
+        packet_id: z.string().describe("Approved evidence packet ID"),
+        review_id: z.string().describe("Review ID that approved it"),
+        to_role: z.string().describe("Destination role (e.g. analyst)"),
+        to_agent_key: z.string().describe("Destination agent's public key"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-      // Bridge → Agora: announce handoff
-      emitAgoraEvent('evidence_handed_off', args.task_id,
-        `Evidence ${args.packet_id} handed off from researcher to ${args.to_role}.`);
+        const unit = state.taskUnits.get(args.task_id);
+        if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            handoffId: handoff.handoffId,
-            fromRole: handoff.fromRole,
-            toRole: handoff.toRole,
-            packetId: handoff.packetId,
-            note: `Evidence handed off to ${args.to_role}. They can now retrieve it with get_evidence.`,
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Error", e) }], isError: true };
-    }
-  }
-);
+        const packet = unit.evidencePackets.find(p => p.packetId === args.packet_id);
+        const review = unit.reviews.find(r => r.reviewId === args.review_id);
+        if (!packet || !review) return { content: [{ type: "text" as const, text: 'Packet or review not found.' }], isError: true };
 
-server.tool(
-  "complete_task",
-  "[OPERATOR] Close the task unit with final status and retrospective.",
-  {
-    task_id: z.string().describe("Task ID"),
-    status: z.enum(["completed", "failed", "partial"]).describe("Final status"),
-    retrospective: z.string().optional().describe("What went well, what didn't"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        try {
+          const handoff = handoffEvidence({
+            taskId: args.task_id,
+            packet,
+            review,
+            fromRole: 'researcher',
+            toRole: args.to_role,
+            toAgentPublicKey: args.to_agent_key,
+            operatorPrivateKey: state.privateKey!,
+          });
 
-    const unit = state.taskUnits.get(args.task_id);
-    if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+          unit.handoffs.push(handoff);
+          saveTasks();
 
-    const completion = completeTask({
-      brief: unit.brief,
-      unit,
-      operatorPublicKey: state.agentKey!,
-      operatorPrivateKey: state.privateKey!,
-      status: args.status,
-      retrospective: args.retrospective,
-    });
+          // Bridge → Agora: announce handoff
+          emitAgoraEvent('evidence_handed_off', args.task_id,
+            `Evidence ${args.packet_id} handed off from researcher to ${args.to_role}.`);
 
-    unit.completion = completion;
-    saveTasks();
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                handoffId: handoff.handoffId,
+                fromRole: handoff.fromRole,
+                toRole: handoff.toRole,
+                packetId: handoff.packetId,
+                note: `Evidence handed off to ${args.to_role}. They can now retrieve it with get_evidence.`,
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Error", e) }], isError: true };
+        }
+      });
 
-    // Bridge → Agora: announce task completion
-    emitAgoraEvent('task_completed', args.task_id,
-      `Status: ${completion.status}. Agents: ${completion.metrics.agentCount}, ` +
-      `Duration: ${completion.metrics.totalDuration}s, ` +
-      `Rework cycles: ${completion.metrics.reworkCount}. ` +
-      (args.retrospective || ''));
+server.registerTool("complete_task", { description: "[OPERATOR] Close the task unit with final status and retrospective.", inputSchema: z.object({
+        task_id: z.string().describe("Task ID"),
+        status: z.enum(["completed", "failed", "partial"]).describe("Final status"),
+        retrospective: z.string().optional().describe("What went well, what didn't"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          taskId: args.task_id,
-          status: completion.status,
-          metrics: completion.metrics,
-          retrospective: completion.retrospective,
-        }, null, 2),
-      }],
-    };
-  }
-);
+        const unit = state.taskUnits.get(args.task_id);
+        if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+
+        const completion = completeTask({
+          brief: unit.brief,
+          unit,
+          operatorPublicKey: state.agentKey!,
+          operatorPrivateKey: state.privateKey!,
+          status: args.status,
+          retrospective: args.retrospective,
+        });
+
+        unit.completion = completion;
+        saveTasks();
+
+        // Bridge → Agora: announce task completion
+        emitAgoraEvent('task_completed', args.task_id,
+          `Status: ${completion.status}. Agents: ${completion.metrics.agentCount}, ` +
+          `Duration: ${completion.metrics.totalDuration}s, ` +
+          `Rework cycles: ${completion.metrics.reworkCount}. ` +
+          (args.retrospective || ''));
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              taskId: args.task_id,
+              status: completion.status,
+              metrics: completion.metrics,
+              retrospective: completion.retrospective,
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // WORKER TOOLS (any assigned role)
 // ═══════════════════════════════════════
 
-server.tool(
-  "accept_assignment",
-  "[ANY ROLE] Accept your task assignment. Confirms you're ready to work.",
-  {
-    task_id: z.string().describe("Task ID to accept"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+server.registerTool("accept_assignment", { description: "[ANY ROLE] Accept your task assignment. Confirms you're ready to work.", inputSchema: z.object({
+        task_id: z.string().describe("Task ID to accept"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-    const unit = state.taskUnits.get(args.task_id);
-    if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+        const unit = state.taskUnits.get(args.task_id);
+        if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
 
-    const myAssignment = unit.assignments.find(a => a.agentPublicKey === state.agentKey);
-    if (!myAssignment) return { content: [{ type: "text" as const, text: 'You are not assigned to this task.' }], isError: true };
+        const myAssignment = unit.assignments.find(a => a.agentPublicKey === state.agentKey);
+        if (!myAssignment) return { content: [{ type: "text" as const, text: 'You are not assigned to this task.' }], isError: true };
 
-    const accepted = acceptTask(myAssignment, state.privateKey!);
-    // Replace in array
-    const idx = unit.assignments.indexOf(myAssignment);
-    unit.assignments[idx] = accepted;
-    state.agentRole = accepted.role as CoordinationRole;
-    saveTasks();
+        const accepted = acceptTask(myAssignment, state.privateKey!);
+        // Replace in array
+        const idx = unit.assignments.indexOf(myAssignment);
+        unit.assignments[idx] = accepted;
+        state.agentRole = accepted.role as CoordinationRole;
+        saveTasks();
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          accepted: true,
-          role: accepted.role,
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              accepted: true,
+              role: accepted.role,
+              taskId: args.task_id,
+              title: unit.brief.title,
+              instructions: ROLE_PROMPTS[accepted.role] || ROLE_PROMPTS['default'],
+            }, null, 2),
+          }],
+        };
+      });
+
+server.registerTool("submit_evidence", { description: "[RESEARCHER] Submit research evidence as a signed packet with citations.", inputSchema: z.object({
+        task_id: z.string().describe("Task ID"),
+        claims: z.array(z.object({
+          dimension: z.string().describe("Evaluation dimension"),
+          subject: z.string().describe("What's being evaluated"),
+          claim: z.string().describe("The factual claim"),
+          quote: z.string().describe("Supporting quote from source (10+ words)"),
+          source_url: z.string().describe("Verifiable source URL"),
+          confidence: z.enum(["high", "medium", "low", "not_found"]).describe("Confidence level"),
+        })).describe("Evidence claims with citations"),
+        methodology: z.string().describe("How you gathered this evidence"),
+      }) }, async (args) => {
+        recordBehavior('submit_evidence');
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+        const unit = state.taskUnits.get(args.task_id);
+        if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+
+        const packet = submitEvidence({
           taskId: args.task_id,
-          title: unit.brief.title,
-          instructions: ROLE_PROMPTS[accepted.role] || ROLE_PROMPTS['default'],
-        }, null, 2),
-      }],
-    };
-  }
-);
+          submitterPublicKey: state.agentKey!,
+          submitterPrivateKey: state.privateKey!,
+          role: (state.agentRole || 'researcher') as CoordinationRole,
+          claims: args.claims.map(c => ({
+            dimension: c.dimension,
+            subject: c.subject,
+            claim: c.claim,
+            quote: c.quote,
+            sourceUrl: c.source_url,
+            confidence: c.confidence,
+          })),
+          methodology: args.methodology,
+        });
 
-server.tool(
-  "submit_evidence",
-  "[RESEARCHER] Submit research evidence as a signed packet with citations.",
-  {
-    task_id: z.string().describe("Task ID"),
-    claims: z.array(z.object({
-      dimension: z.string().describe("Evaluation dimension"),
-      subject: z.string().describe("What's being evaluated"),
-      claim: z.string().describe("The factual claim"),
-      quote: z.string().describe("Supporting quote from source (10+ words)"),
-      source_url: z.string().describe("Verifiable source URL"),
-      confidence: z.enum(["high", "medium", "low", "not_found"]).describe("Confidence level"),
-    })).describe("Evidence claims with citations"),
-    methodology: z.string().describe("How you gathered this evidence"),
-  },
-  async (args) => {
-    recordBehavior('submit_evidence');
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        unit.evidencePackets.push(packet);
+        saveTasks();
 
-    const unit = state.taskUnits.get(args.task_id);
-    if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+        // Bridge → Agora: announce evidence submission
+        emitAgoraEvent('evidence_submitted', args.task_id,
+          `Evidence packet with ${packet.metadata.totalClaims} claims (${packet.metadata.citedClaims} cited, ${packet.metadata.gapCount} gaps).`);
 
-    const packet = submitEvidence({
-      taskId: args.task_id,
-      submitterPublicKey: state.agentKey!,
-      submitterPrivateKey: state.privateKey!,
-      role: (state.agentRole || 'researcher') as CoordinationRole,
-      claims: args.claims.map(c => ({
-        dimension: c.dimension,
-        subject: c.subject,
-        claim: c.claim,
-        quote: c.quote,
-        sourceUrl: c.source_url,
-        confidence: c.confidence,
-      })),
-      methodology: args.methodology,
-    });
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              packetId: packet.packetId,
+              totalClaims: packet.metadata.totalClaims,
+              citedClaims: packet.metadata.citedClaims,
+              gapCount: packet.metadata.gapCount,
+              sourcesSearched: packet.metadata.sourcesSearched,
+              signed: true,
+              note: 'Evidence submitted. Operator will review.',
+            }, null, 2),
+          }],
+        };
+      });
 
-    unit.evidencePackets.push(packet);
-    saveTasks();
+server.registerTool("get_evidence", { description: "[ANALYST/BUILDER/REVIEWER] Get evidence that was handed off to you.", inputSchema: z.object({
+        task_id: z.string().describe("Task ID"),
+      }) }, async (args) => {
+        const unit = state.taskUnits.get(args.task_id);
+        if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
 
-    // Bridge → Agora: announce evidence submission
-    emitAgoraEvent('evidence_submitted', args.task_id,
-      `Evidence packet with ${packet.metadata.totalClaims} claims (${packet.metadata.citedClaims} cited, ${packet.metadata.gapCount} gaps).`);
+        // Find handoffs to this agent
+        const myHandoffs = unit.handoffs.filter(h => h.toAgent === state.agentKey);
+        if (myHandoffs.length === 0) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                message: 'No evidence has been handed off to you yet. Wait for the operator to approve and hand off evidence.',
+                taskStatus: getTaskStatus(unit),
+              }, null, 2),
+            }],
+          };
+        }
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          packetId: packet.packetId,
-          totalClaims: packet.metadata.totalClaims,
-          citedClaims: packet.metadata.citedClaims,
-          gapCount: packet.metadata.gapCount,
-          sourcesSearched: packet.metadata.sourcesSearched,
-          signed: true,
-          note: 'Evidence submitted. Operator will review.',
-        }, null, 2),
-      }],
-    };
-  }
-);
+        // Get the actual evidence packets
+        const evidenceForMe = myHandoffs.map(h => {
+          const packet = unit.evidencePackets.find(p => p.packetId === h.packetId);
+          return {
+            handoffId: h.handoffId,
+            fromRole: h.fromRole,
+            packetId: h.packetId,
+            claims: packet?.claims || [],
+            metadata: packet?.metadata,
+          };
+        });
 
-server.tool(
-  "get_evidence",
-  "[ANALYST/BUILDER/REVIEWER] Get evidence that was handed off to you.",
-  {
-    task_id: z.string().describe("Task ID"),
-  },
-  async (args) => {
-    const unit = state.taskUnits.get(args.task_id);
-    if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              evidencePackets: evidenceForMe,
+              totalClaims: evidenceForMe.reduce((s, e) => s + e.claims.length, 0),
+              note: 'Use these evidence packets to produce your deliverable. Cite by packet ID.',
+            }, null, 2),
+          }],
+        };
+      });
 
-    // Find handoffs to this agent
-    const myHandoffs = unit.handoffs.filter(h => h.toAgent === state.agentKey);
-    if (myHandoffs.length === 0) {
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            message: 'No evidence has been handed off to you yet. Wait for the operator to approve and hand off evidence.',
-            taskStatus: getTaskStatus(unit),
-          }, null, 2),
-        }],
-      };
-    }
+server.registerTool("submit_deliverable", { description: "[ANALYST/BUILDER] Submit your final output tied to evidence.", inputSchema: z.object({
+        task_id: z.string().describe("Task ID"),
+        spec_id: z.string().describe("Deliverable spec ID from the brief"),
+        content: z.string().describe("The deliverable content"),
+        evidence_packet_ids: z.array(z.string()).describe("Evidence packet IDs used"),
+        citation_count: z.number().describe("Number of citations in output"),
+        gaps_flagged: z.number().describe("Number of gaps explicitly flagged"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-    // Get the actual evidence packets
-    const evidenceForMe = myHandoffs.map(h => {
-      const packet = unit.evidencePackets.find(p => p.packetId === h.packetId);
-      return {
-        handoffId: h.handoffId,
-        fromRole: h.fromRole,
-        packetId: h.packetId,
-        claims: packet?.claims || [],
-        metadata: packet?.metadata,
-      };
-    });
+        const unit = state.taskUnits.get(args.task_id);
+        if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          evidencePackets: evidenceForMe,
-          totalClaims: evidenceForMe.reduce((s, e) => s + e.claims.length, 0),
-          note: 'Use these evidence packets to produce your deliverable. Cite by packet ID.',
-        }, null, 2),
-      }],
-    };
-  }
-);
+        const deliverable = submitDeliverable({
+          taskId: args.task_id,
+          specId: args.spec_id,
+          submitterPublicKey: state.agentKey!,
+          submitterPrivateKey: state.privateKey!,
+          role: (state.agentRole || 'analyst') as CoordinationRole,
+          content: args.content,
+          evidencePacketIds: args.evidence_packet_ids,
+          citationCount: args.citation_count,
+          gapsFlagged: args.gaps_flagged,
+        });
 
-server.tool(
-  "submit_deliverable",
-  "[ANALYST/BUILDER] Submit your final output tied to evidence.",
-  {
-    task_id: z.string().describe("Task ID"),
-    spec_id: z.string().describe("Deliverable spec ID from the brief"),
-    content: z.string().describe("The deliverable content"),
-    evidence_packet_ids: z.array(z.string()).describe("Evidence packet IDs used"),
-    citation_count: z.number().describe("Number of citations in output"),
-    gaps_flagged: z.number().describe("Number of gaps explicitly flagged"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        unit.deliverables.push(deliverable);
+        saveTasks();
 
-    const unit = state.taskUnits.get(args.task_id);
-    if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+        // Bridge → Agora: announce deliverable
+        emitAgoraEvent('deliverable_submitted', args.task_id,
+          `Deliverable for spec ${args.spec_id} submitted by ${state.agentRole || 'agent'} with ${args.citation_count} citations.`);
 
-    const deliverable = submitDeliverable({
-      taskId: args.task_id,
-      specId: args.spec_id,
-      submitterPublicKey: state.agentKey!,
-      submitterPrivateKey: state.privateKey!,
-      role: (state.agentRole || 'analyst') as CoordinationRole,
-      content: args.content,
-      evidencePacketIds: args.evidence_packet_ids,
-      citationCount: args.citation_count,
-      gapsFlagged: args.gaps_flagged,
-    });
-
-    unit.deliverables.push(deliverable);
-    saveTasks();
-
-    // Bridge → Agora: announce deliverable
-    emitAgoraEvent('deliverable_submitted', args.task_id,
-      `Deliverable for spec ${args.spec_id} submitted by ${state.agentRole || 'agent'} with ${args.citation_count} citations.`);
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          deliverableId: deliverable.deliverableId,
-          role: deliverable.role,
-          citations: deliverable.citationCount,
-          gapsFlagged: deliverable.gapsFlagged,
-          signed: true,
-          note: 'Deliverable submitted. Operator will review and close the task.',
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              deliverableId: deliverable.deliverableId,
+              role: deliverable.role,
+              citations: deliverable.citationCount,
+              gapsFlagged: deliverable.gapsFlagged,
+              signed: true,
+              note: 'Deliverable submitted. Operator will review and close the task.',
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // SHARED TOOLS (any agent)
 // ═══════════════════════════════════════
 
-server.tool(
-  "list_tasks",
-  "List all tasks in the coordination store.",
-  {},
-  async () => {
-    const tasks = Array.from(state.taskUnits.entries()).map(([id, unit]) => ({
-      taskId: id,
-      title: unit.brief.title,
-      status: getTaskStatus(unit),
-      roles: unit.brief.roles.map(r => ({
-        role: r.role,
-        assigned: !!r.assignedTo,
-        agentKey: r.assignedTo ? r.assignedTo.slice(0, 12) + '...' : null,
-      })),
-      evidencePackets: unit.evidencePackets.length,
-      reviews: unit.reviews.length,
-      deliverables: unit.deliverables.length,
-      completed: !!unit.completion,
-    }));
+server.registerTool("list_tasks", { description: "List all tasks in the coordination store.", inputSchema: z.object({}) }, async () => {
+        const tasks = Array.from(state.taskUnits.entries()).map(([id, unit]) => ({
+          taskId: id,
+          title: unit.brief.title,
+          status: getTaskStatus(unit),
+          roles: unit.brief.roles.map(r => ({
+            role: r.role,
+            assigned: !!r.assignedTo,
+            agentKey: r.assignedTo ? r.assignedTo.slice(0, 12) + '...' : null,
+          })),
+          evidencePackets: unit.evidencePackets.length,
+          reviews: unit.reviews.length,
+          deliverables: unit.deliverables.length,
+          completed: !!unit.completion,
+        }));
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({ tasks, total: tasks.length }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({ tasks, total: tasks.length }, null, 2),
+          }],
+        };
+      });
 
-server.tool(
-  "get_task_detail",
-  "Get full details of a specific task including all evidence, reviews, and deliverables.",
-  {
-    task_id: z.string().describe("Task ID"),
-  },
-  async (args) => {
-    const unit = state.taskUnits.get(args.task_id);
-    if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
+server.registerTool("get_task_detail", { description: "Get full details of a specific task including all evidence, reviews, and deliverables.", inputSchema: z.object({
+        task_id: z.string().describe("Task ID"),
+      }) }, async (args) => {
+        const unit = state.taskUnits.get(args.task_id);
+        if (!unit) return { content: [{ type: "text" as const, text: `Task ${args.task_id} not found.` }], isError: true };
 
-    const validation = validateTaskUnit(unit);
+        const validation = validateTaskUnit(unit);
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          brief: {
-            taskId: unit.brief.taskId,
-            title: unit.brief.title,
-            description: unit.brief.description,
-            roles: unit.brief.roles,
-            deliverables: unit.brief.deliverables,
-            acceptanceCriteria: unit.brief.acceptanceCriteria,
-            status: getTaskStatus(unit),
-          },
-          assignments: unit.assignments.map(a => ({
-            role: a.role,
-            agentId: a.agentId,
-            accepted: !!a.acceptedAt,
-          })),
-          evidencePackets: unit.evidencePackets.map(p => ({
-            packetId: p.packetId,
-            role: p.role,
-            totalClaims: p.metadata.totalClaims,
-            gapCount: p.metadata.gapCount,
-          })),
-          reviews: unit.reviews.map(r => ({
-            reviewId: r.reviewId,
-            packetId: r.packetId,
-            verdict: r.verdict,
-            score: r.score,
-          })),
-          handoffs: unit.handoffs.map(h => ({
-            handoffId: h.handoffId,
-            fromRole: h.fromRole,
-            toRole: h.toRole,
-          })),
-          deliverables: unit.deliverables.map(d => ({
-            deliverableId: d.deliverableId,
-            role: d.role,
-            citations: d.citationCount,
-            gaps: d.gapsFlagged,
-          })),
-          completion: unit.completion ? {
-            status: unit.completion.status,
-            metrics: unit.completion.metrics,
-          } : null,
-          validation,
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              brief: {
+                taskId: unit.brief.taskId,
+                title: unit.brief.title,
+                description: unit.brief.description,
+                roles: unit.brief.roles,
+                deliverables: unit.brief.deliverables,
+                acceptanceCriteria: unit.brief.acceptanceCriteria,
+                status: getTaskStatus(unit),
+              },
+              assignments: unit.assignments.map(a => ({
+                role: a.role,
+                agentId: a.agentId,
+                accepted: !!a.acceptedAt,
+              })),
+              evidencePackets: unit.evidencePackets.map(p => ({
+                packetId: p.packetId,
+                role: p.role,
+                totalClaims: p.metadata.totalClaims,
+                gapCount: p.metadata.gapCount,
+              })),
+              reviews: unit.reviews.map(r => ({
+                reviewId: r.reviewId,
+                packetId: r.packetId,
+                verdict: r.verdict,
+                score: r.score,
+              })),
+              handoffs: unit.handoffs.map(h => ({
+                handoffId: h.handoffId,
+                fromRole: h.fromRole,
+                toRole: h.toRole,
+              })),
+              deliverables: unit.deliverables.map(d => ({
+                deliverableId: d.deliverableId,
+                role: d.role,
+                citations: d.citationCount,
+                gaps: d.gapsFlagged,
+              })),
+              completion: unit.completion ? {
+                status: unit.completion.status,
+                metrics: unit.completion.metrics,
+              } : null,
+              validation,
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // DELEGATION TOOLS (Layer 1)
 // ═══════════════════════════════════════
 
-server.tool(
-  "create_delegation",
-  "[OPERATOR] Create a scoped delegation from one agent to another.",
-  {
-    delegated_to: z.string().describe("Public key of the agent receiving delegation"),
-    scope: z.array(z.string()).describe("Scopes to grant (e.g. ['web_search', 'code_execution'])"),
-    spend_limit: z.number().default(500).describe("Maximum spend allowed"),
-    max_depth: z.number().default(1).describe("How many levels of sub-delegation"),
-    expires_in_hours: z.number().default(24).describe("Delegation validity in hours"),
-  },
-  async (args) => {
-    recordBehavior('create_delegation');
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+server.registerTool("create_delegation", { description: "[OPERATOR] Create a scoped delegation from one agent to another.", inputSchema: z.object({
+        delegated_to: z.string().describe("Public key of the agent receiving delegation"),
+        scope: z.array(z.string()).describe("Scopes to grant (e.g. ['web_search', 'code_execution'])"),
+        spend_limit: z.number().default(500).describe("Maximum spend allowed"),
+        max_depth: z.number().default(1).describe("How many levels of sub-delegation"),
+        expires_in_hours: z.number().default(24).describe("Delegation validity in hours"),
+      }) }, async (args) => {
+        recordBehavior('create_delegation');
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-    // Validate delegation scopes
-    if (!args.scope || args.scope.length === 0) {
-      return { content: [{ type: "text" as const, text: "Delegation must include at least one scope." }], isError: true };
-    }
-    const SCOPE_PATTERN = /^[a-zA-Z0-9_.:/-]+$/;
-    for (const s of args.scope) {
-      if (s === '*' || s === '**') {
-        return { content: [{ type: "text" as const, text: `Wildcard scope "${s}" not allowed. Use explicit scopes.` }], isError: true };
-      }
-      if (s.length > 128) {
-        return { content: [{ type: "text" as const, text: `Scope exceeds max length (128 chars).` }], isError: true };
-      }
-      if (!SCOPE_PATTERN.test(s)) {
-        return { content: [{ type: "text" as const, text: `Scope "${s}" contains invalid characters.` }], isError: true };
-      }
-    }
+        // Validate delegation scopes
+        if (!args.scope || args.scope.length === 0) {
+          return { content: [{ type: "text" as const, text: "Delegation must include at least one scope." }], isError: true };
+        }
+        const SCOPE_PATTERN = /^[a-zA-Z0-9_.:/-]+$/;
+        for (const s of args.scope) {
+          if (s === '*' || s === '**') {
+            return { content: [{ type: "text" as const, text: `Wildcard scope "${s}" not allowed. Use explicit scopes.` }], isError: true };
+          }
+          if (s.length > 128) {
+            return { content: [{ type: "text" as const, text: `Scope exceeds max length (128 chars).` }], isError: true };
+          }
+          if (!SCOPE_PATTERN.test(s)) {
+            return { content: [{ type: "text" as const, text: `Scope "${s}" contains invalid characters.` }], isError: true };
+          }
+        }
 
-    const delegation = createDelegation({
-      delegatedBy: state.agentKey!,
-      delegatedTo: args.delegated_to,
-      scope: args.scope,
-      spendLimit: args.spend_limit,
-      maxDepth: args.max_depth,
-      expiresInHours: args.expires_in_hours,
-      privateKey: state.privateKey!,
-    });
+        const delegation = createDelegation({
+          delegatedBy: state.agentKey!,
+          delegatedTo: args.delegated_to,
+          scope: args.scope,
+          spendLimit: args.spend_limit,
+          maxDepth: args.max_depth,
+          expiresInHours: args.expires_in_hours,
+          privateKey: state.privateKey!,
+        });
 
-    state.delegations.set(delegation.delegationId, delegation);
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          delegationId: delegation.delegationId,
-          delegatedTo: args.delegated_to.slice(0, 16) + '...',
-          scope: delegation.scope,
-          spendLimit: delegation.spendLimit,
-          maxDepth: delegation.maxDepth,
-          expiresAt: delegation.expiresAt,
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "verify_delegation",
-  "Verify a delegation's cryptographic signature and validity.",
-  {
-    delegation_id: z.string().describe("Delegation ID to verify"),
-  },
-  async (args) => {
-    const delegation = state.delegations.get(args.delegation_id);
-    if (!delegation) return { content: [{ type: "text" as const, text: `Delegation ${args.delegation_id} not found in session.` }], isError: true };
-
-    const result = verifyDelegation(delegation);
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          delegationId: args.delegation_id,
-          valid: result.valid,
-          errors: result.errors,
-          scope: delegation.scope,
-          expired: new Date(delegation.expiresAt) < new Date(),
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "revoke_delegation",
-  "[OPERATOR] Revoke a delegation. Optionally cascade to all sub-delegations.",
-  {
-    delegation_id: z.string().describe("Delegation ID to revoke"),
-    reason: z.string().describe("Why the delegation is being revoked"),
-    cascade: z.boolean().default(true).describe("Also revoke all sub-delegations"),
-  },
-  async (args) => {
-    recordBehavior('revoke_delegation');
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-
-    if (args.cascade) {
-      const result = cascadeRevoke(args.delegation_id, state.agentKey!, args.reason, state.privateKey!);
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            revokedCount: result.totalRevoked,
-            rootRevocation: { delegationId: result.rootRevocation.delegationId, revokedAt: result.rootRevocation.revokedAt },
-            cascadedCount: result.cascadedRevocations.length,
-            reason: args.reason,
-          }, null, 2),
-        }],
-      };
-    } else {
-      const revocation = revokeDelegation(args.delegation_id, state.agentKey!, args.reason, state.privateKey!);
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            delegationId: args.delegation_id,
-            revokedAt: revocation.revokedAt,
-            reason: args.reason,
-          }, null, 2),
-        }],
-      };
-    }
-  }
-);
-
-server.tool(
-  "sub_delegate",
-  "Sub-delegate authority to another agent (must be within your delegation scope and depth).",
-  {
-    parent_delegation_id: z.string().describe("Your delegation ID"),
-    delegated_to: z.string().describe("Public key of the agent receiving sub-delegation"),
-    scope: z.array(z.string()).describe("Scopes to grant (must be subset of parent)"),
-    spend_limit: z.number().describe("Maximum spend (must be <= parent)"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-
-    try {
-      const parentDel = state.delegations.get(args.parent_delegation_id);
-      if (!parentDel) return { content: [{ type: "text" as const, text: `Parent delegation ${args.parent_delegation_id} not found in session.` }], isError: true };
-
-      // F-3 fix: pre-check revocation before attempting sub-delegation
-      const parentStatus = verifyDelegation(parentDel);
-      if (!parentStatus.valid) {
-        return { content: [{ type: "text" as const, text: `Sub-delegation failed: Parent delegation ${args.parent_delegation_id} is invalid (${parentStatus.errors.join(', ')}).` }], isError: true };
-      }
-
-      const sub = subDelegate({
-        parentDelegation: parentDel,
-        delegatedTo: args.delegated_to,
-        scope: args.scope,
-        spendLimit: args.spend_limit,
-        privateKey: state.privateKey!,
+        state.delegations.set(delegation.delegationId, delegation);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              delegationId: delegation.delegationId,
+              delegatedTo: args.delegated_to.slice(0, 16) + '...',
+              scope: delegation.scope,
+              spendLimit: delegation.spendLimit,
+              maxDepth: delegation.maxDepth,
+              expiresAt: delegation.expiresAt,
+            }, null, 2),
+          }],
+        };
       });
 
-      state.delegations.set(sub.delegationId, sub);
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            delegationId: sub.delegationId,
-            parentId: args.parent_delegation_id,
-            scope: sub.scope,
-            spendLimit: sub.spendLimit,
-            depth: sub.currentDepth,
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Sub-delegation failed", e) }], isError: true };
-    }
-  }
-);
+server.registerTool("verify_delegation", { description: "Verify a delegation's cryptographic signature and validity.", inputSchema: z.object({
+        delegation_id: z.string().describe("Delegation ID to verify"),
+      }) }, async (args) => {
+        const delegation = state.delegations.get(args.delegation_id);
+        if (!delegation) return { content: [{ type: "text" as const, text: `Delegation ${args.delegation_id} not found in session.` }], isError: true };
+
+        const result = verifyDelegation(delegation);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              delegationId: args.delegation_id,
+              valid: result.valid,
+              errors: result.errors,
+              scope: delegation.scope,
+              expired: new Date(delegation.expiresAt) < new Date(),
+            }, null, 2),
+          }],
+        };
+      });
+
+server.registerTool("revoke_delegation", { description: "[OPERATOR] Revoke a delegation. Optionally cascade to all sub-delegations.", inputSchema: z.object({
+        delegation_id: z.string().describe("Delegation ID to revoke"),
+        reason: z.string().describe("Why the delegation is being revoked"),
+        cascade: z.boolean().default(true).describe("Also revoke all sub-delegations"),
+      }) }, async (args) => {
+        recordBehavior('revoke_delegation');
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+        if (args.cascade) {
+          const result = cascadeRevoke(args.delegation_id, state.agentKey!, args.reason, state.privateKey!);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                revokedCount: result.totalRevoked,
+                rootRevocation: { delegationId: result.rootRevocation.delegationId, revokedAt: result.rootRevocation.revokedAt },
+                cascadedCount: result.cascadedRevocations.length,
+                reason: args.reason,
+              }, null, 2),
+            }],
+          };
+        } else {
+          const revocation = revokeDelegation(args.delegation_id, state.agentKey!, args.reason, state.privateKey!);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                delegationId: args.delegation_id,
+                revokedAt: revocation.revokedAt,
+                reason: args.reason,
+              }, null, 2),
+            }],
+          };
+        }
+      });
+
+server.registerTool("sub_delegate", { description: "Sub-delegate authority to another agent (must be within your delegation scope and depth).", inputSchema: z.object({
+        parent_delegation_id: z.string().describe("Your delegation ID"),
+        delegated_to: z.string().describe("Public key of the agent receiving sub-delegation"),
+        scope: z.array(z.string()).describe("Scopes to grant (must be subset of parent)"),
+        spend_limit: z.number().describe("Maximum spend (must be <= parent)"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+        try {
+          const parentDel = state.delegations.get(args.parent_delegation_id);
+          if (!parentDel) return { content: [{ type: "text" as const, text: `Parent delegation ${args.parent_delegation_id} not found in session.` }], isError: true };
+
+          // F-3 fix: pre-check revocation before attempting sub-delegation
+          const parentStatus = verifyDelegation(parentDel);
+          if (!parentStatus.valid) {
+            return { content: [{ type: "text" as const, text: `Sub-delegation failed: Parent delegation ${args.parent_delegation_id} is invalid (${parentStatus.errors.join(', ')}).` }], isError: true };
+          }
+
+          const sub = subDelegate({
+            parentDelegation: parentDel,
+            delegatedTo: args.delegated_to,
+            scope: args.scope,
+            spendLimit: args.spend_limit,
+            privateKey: state.privateKey!,
+          });
+
+          state.delegations.set(sub.delegationId, sub);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                delegationId: sub.delegationId,
+                parentId: args.parent_delegation_id,
+                scope: sub.scope,
+                spendLimit: sub.spendLimit,
+                depth: sub.currentDepth,
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Sub-delegation failed", e) }], isError: true };
+        }
+      });
 
 // ═══════════════════════════════════════
 // AGORA TOOLS (Layer 4)
 // ═══════════════════════════════════════
 
-server.tool(
-  "post_agora_message",
-  "Post a signed message to the Agora feed. Anyone can read, everything is signed.",
-  {
-    topic: z.string().describe("Topic channel (e.g. 'coordination', 'governance', 'general')"),
-    type: z.enum(["announcement", "proposal", "discussion", "request", "ack", "vote"]).describe("Message type"),
-    subject: z.string().describe("One-line summary"),
-    content: z.string().describe("Message body (markdown)"),
-    reply_to: z.string().optional().describe("Message ID to reply to (for threading)"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+server.registerTool("post_agora_message", { description: "Post a signed message to the Agora feed. Anyone can read, everything is signed.", inputSchema: z.object({
+        topic: z.string().describe("Topic channel (e.g. 'coordination', 'governance', 'general')"),
+        type: z.enum(["announcement", "proposal", "discussion", "request", "ack", "vote"]).describe("Message type"),
+        subject: z.string().describe("One-line summary"),
+        content: z.string().describe("Message body (markdown)"),
+        reply_to: z.string().optional().describe("Message ID to reply to (for threading)"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-    const message = createAgoraMessage({
-      agentId: state.agentId || 'anonymous',
-      agentName: state.agentId || 'anonymous',
-      publicKey: state.agentKey!,
-      privateKey: state.privateKey!,
-      topic: args.topic,
-      type: args.type,
-      subject: args.subject,
-      content: args.content,
-      replyTo: args.reply_to,
-    });
-
-    state.agoraFeed = appendToFeed(state.agoraFeed, message);
-    persistAgoraFeed();
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          messageId: message.id,
-          topic: message.topic,
-          subject: message.subject,
-          signed: !!message.signature,
-          feedSize: state.agoraFeed.messages.length,
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "get_agora_topics",
-  "List all topics in the Agora feed with message counts.",
-  {},
-  async () => {
-    const topics = getTopics(state.agoraFeed);
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          topics: topics.map(t => ({ topic: t.topic, count: t.count })),
-          totalMessages: state.agoraFeed.messages.length,
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "get_agora_thread",
-  "Get a message thread from the Agora feed.",
-  {
-    message_id: z.string().describe("Root message ID to get thread for"),
-  },
-  async (args) => {
-    const thread = getThread(state.agoraFeed, args.message_id);
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          threadLength: thread.length,
-          messages: thread.map(m => ({
-            id: m.id,
-            author: m.author.agentId,
-            subject: m.subject,
-            content: m.content.slice(0, 200) + (m.content.length > 200 ? '...' : ''),
-            replyTo: m.replyTo,
-          })),
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "get_agora_by_topic",
-  "Get all messages in a topic.",
-  {
-    topic: z.string().describe("Topic to filter by"),
-  },
-  async (args) => {
-    const messages = getByTopic(state.agoraFeed, args.topic);
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
+        const message = createAgoraMessage({
+          agentId: state.agentId || 'anonymous',
+          agentName: state.agentId || 'anonymous',
+          publicKey: state.agentKey!,
+          privateKey: state.privateKey!,
           topic: args.topic,
-          count: messages.length,
-          messages: messages.map(m => ({
-            id: m.id,
-            author: m.author.agentId,
-            type: m.type,
-            subject: m.subject,
-            content: m.content.slice(0, 200) + (m.content.length > 200 ? '...' : ''),
-            timestamp: m.timestamp,
-          })),
-        }, null, 2),
-      }],
-    };
-  }
-);
+          type: args.type,
+          subject: args.subject,
+          content: args.content,
+          replyTo: args.reply_to,
+        });
 
-server.tool(
-  "register_agora_agent",
-  "Register an agent in the Agora so their messages can be verified.",
-  {
-    agent_id: z.string().describe("Agent ID"),
-    agent_name: z.string().describe("Display name"),
-    public_key: z.string().describe("Ed25519 public key"),
-  },
-  async (args) => {
-    registerAgent(state.agoraRegistry, {
-      agentId: args.agent_id,
-      agentName: args.agent_name,
-      publicKey: args.public_key,
-      joinedAt: new Date().toISOString(),
-      role: 'member',
-    });
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          registered: true,
-          agentId: args.agent_id,
-          registrySize: state.agoraRegistry.agents.length,
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "register_agora_public",
-  "Register your agent in the PUBLIC Agora registry at aeoess.com. Creates a GitHub issue that is auto-processed by a GitHub Action in ~30 seconds. Requires GITHUB_TOKEN env var or pass token directly. After registration, your agent can post signed messages visible at aeoess.com/agora.",
-  {
-    token: z.string().optional().describe("GitHub personal access token (or set GITHUB_TOKEN env var)"),
-    runtime: z.string().optional().describe("Agent runtime platform (e.g., 'claude', 'gpt-telegram', 'openclaw-github')"),
-    capabilities: z.array(z.string()).optional().describe("Agent capabilities"),
-    owner: z.string().optional().describe("Who operates this agent"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }] };
-
-    const agentId = state.agentId || 'unknown';
-    const agentName = getAgentName();
-    const publicKey = state.agentKey || '';
-
-    if (!publicKey) {
-      return { content: [{ type: "text" as const, text: "❌ No public key. Run identify or generate_keys first." }] };
-    }
-
-    const token = args.token || process.env.GITHUB_TOKEN;
-    if (!token) {
-      const regJSON = JSON.stringify({
-        agentId, agentName, publicKey,
-        owner: args.owner || '', runtime: args.runtime || '',
-        capabilities: args.capabilities || [], role: 'member'
-      }, null, 2);
-
-      const title = encodeURIComponent(`Agora Register: ${agentName}`);
-      const body = encodeURIComponent(`Register agent via MCP.\n\n\`\`\`json\n${regJSON}\n\`\`\`\n`);
-      const url = `https://github.com/aeoess/aeoess_web/issues/new?title=${title}&body=${body}&labels=agora-register`;
-
-      return { content: [{ type: "text" as const, text: `No GITHUB_TOKEN found. Open this URL to register manually:\n\n${url}` }] };
-    }
-
-    const registrationJSON = {
-      agentId, agentName, publicKey,
-      owner: args.owner || '', runtime: args.runtime || '',
-      capabilities: args.capabilities || [], role: 'member'
-    };
-
-    const issueTitle = `Agora Register: ${agentName}`;
-    const issueBody = `Register agent via MCP (agent-passport-system-mcp).\n\n\`\`\`json\n${JSON.stringify(registrationJSON, null, 2)}\n\`\`\`\n`;
-
-    try {
-      const response = await fetch('https://api.github.com/repos/aeoess/aeoess_web/issues', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/vnd.github+json',
-          'Content-Type': 'application/json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          'User-Agent': 'agent-passport-mcp'
-        },
-        body: JSON.stringify({
-          title: issueTitle,
-          body: issueBody,
-          labels: ['agora-register']
-        })
+        state.agoraFeed = appendToFeed(state.agoraFeed, message);
+        persistAgoraFeed();
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              messageId: message.id,
+              topic: message.topic,
+              subject: message.subject,
+              signed: !!message.signature,
+              feedSize: state.agoraFeed.messages.length,
+            }, null, 2),
+          }],
+        };
       });
 
-      if (!response.ok) {
-        const err = await response.text();
-        return { content: [{ type: "text" as const, text: `❌ GitHub API error (${response.status}): ${err.slice(0, 300)}\nCheck your token has "repo" or "public_repo" scope.` }] };
-      }
+server.registerTool("get_agora_topics", { description: "List all topics in the Agora feed with message counts.", inputSchema: z.object({}) }, async () => {
+        const topics = getTopics(state.agoraFeed);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              topics: topics.map(t => ({ topic: t.topic, count: t.count })),
+              totalMessages: state.agoraFeed.messages.length,
+            }, null, 2),
+          }],
+        };
+      });
 
-      const issue = await response.json() as { html_url: string; number: number };
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            registered: true,
-            agentId,
-            publicKey: publicKey.slice(0, 16) + '...',
-            issueUrl: issue.html_url,
-            issueNumber: issue.number,
-            note: 'GitHub Action will process this in ~30 seconds. Check aeoess.com/agora after.'
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Failed to create issue", e) }] };
-    }
-  }
-);
+server.registerTool("get_agora_thread", { description: "Get a message thread from the Agora feed.", inputSchema: z.object({
+        message_id: z.string().describe("Root message ID to get thread for"),
+      }) }, async (args) => {
+        const thread = getThread(state.agoraFeed, args.message_id);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              threadLength: thread.length,
+              messages: thread.map(m => ({
+                id: m.id,
+                author: m.author.agentId,
+                subject: m.subject,
+                content: m.content.slice(0, 200) + (m.content.length > 200 ? '...' : ''),
+                replyTo: m.replyTo,
+              })),
+            }, null, 2),
+          }],
+        };
+      });
+
+server.registerTool("get_agora_by_topic", { description: "Get all messages in a topic.", inputSchema: z.object({
+        topic: z.string().describe("Topic to filter by"),
+      }) }, async (args) => {
+        const messages = getByTopic(state.agoraFeed, args.topic);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              topic: args.topic,
+              count: messages.length,
+              messages: messages.map(m => ({
+                id: m.id,
+                author: m.author.agentId,
+                type: m.type,
+                subject: m.subject,
+                content: m.content.slice(0, 200) + (m.content.length > 200 ? '...' : ''),
+                timestamp: m.timestamp,
+              })),
+            }, null, 2),
+          }],
+        };
+      });
+
+server.registerTool("register_agora_agent", { description: "Register an agent in the Agora so their messages can be verified.", inputSchema: z.object({
+        agent_id: z.string().describe("Agent ID"),
+        agent_name: z.string().describe("Display name"),
+        public_key: z.string().describe("Ed25519 public key"),
+      }) }, async (args) => {
+        registerAgent(state.agoraRegistry, {
+          agentId: args.agent_id,
+          agentName: args.agent_name,
+          publicKey: args.public_key,
+          joinedAt: new Date().toISOString(),
+          role: 'member',
+        });
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              registered: true,
+              agentId: args.agent_id,
+              registrySize: state.agoraRegistry.agents.length,
+            }, null, 2),
+          }],
+        };
+      });
+
+server.registerTool("register_agora_public", { description: "Register your agent in the PUBLIC Agora registry at aeoess.com. Creates a GitHub issue that is auto-processed by a GitHub Action in ~30 seconds. Requires GITHUB_TOKEN env var or pass token directly. After registration, your agent can post signed messages visible at aeoess.com/agora.", inputSchema: z.object({
+        token: z.string().optional().describe("GitHub personal access token (or set GITHUB_TOKEN env var)"),
+        runtime: z.string().optional().describe("Agent runtime platform (e.g., 'claude', 'gpt-telegram', 'openclaw-github')"),
+        capabilities: z.array(z.string()).optional().describe("Agent capabilities"),
+        owner: z.string().optional().describe("Who operates this agent"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }] };
+
+        const agentId = state.agentId || 'unknown';
+        const agentName = getAgentName();
+        const publicKey = state.agentKey || '';
+
+        if (!publicKey) {
+          return { content: [{ type: "text" as const, text: "❌ No public key. Run identify or generate_keys first." }] };
+        }
+
+        const token = args.token || process.env.GITHUB_TOKEN;
+        if (!token) {
+          const regJSON = JSON.stringify({
+            agentId, agentName, publicKey,
+            owner: args.owner || '', runtime: args.runtime || '',
+            capabilities: args.capabilities || [], role: 'member'
+          }, null, 2);
+
+          const title = encodeURIComponent(`Agora Register: ${agentName}`);
+          const body = encodeURIComponent(`Register agent via MCP.\n\n\`\`\`json\n${regJSON}\n\`\`\`\n`);
+          const url = `https://github.com/aeoess/aeoess_web/issues/new?title=${title}&body=${body}&labels=agora-register`;
+
+          return { content: [{ type: "text" as const, text: `No GITHUB_TOKEN found. Open this URL to register manually:\n\n${url}` }] };
+        }
+
+        const registrationJSON = {
+          agentId, agentName, publicKey,
+          owner: args.owner || '', runtime: args.runtime || '',
+          capabilities: args.capabilities || [], role: 'member'
+        };
+
+        const issueTitle = `Agora Register: ${agentName}`;
+        const issueBody = `Register agent via MCP (agent-passport-system-mcp).\n\n\`\`\`json\n${JSON.stringify(registrationJSON, null, 2)}\n\`\`\`\n`;
+
+        try {
+          const response = await fetch('https://api.github.com/repos/aeoess/aeoess_web/issues', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Accept': 'application/vnd.github+json',
+              'Content-Type': 'application/json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'agent-passport-mcp'
+            },
+            body: JSON.stringify({
+              title: issueTitle,
+              body: issueBody,
+              labels: ['agora-register']
+            })
+          });
+
+          if (!response.ok) {
+            const err = await response.text();
+            return { content: [{ type: "text" as const, text: `❌ GitHub API error (${response.status}): ${err.slice(0, 300)}\nCheck your token has "repo" or "public_repo" scope.` }] };
+          }
+
+          const issue = await response.json() as { html_url: string; number: number };
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                registered: true,
+                agentId,
+                publicKey: publicKey.slice(0, 16) + '...',
+                issueUrl: issue.html_url,
+                issueNumber: issue.number,
+                note: 'GitHub Action will process this in ~30 seconds. Check aeoess.com/agora after.'
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Failed to create issue", e) }] };
+        }
+      });
 
 // ═══════════════════════════════════════
 // COMMS TOOLS (Agent-to-Agent Communication)
 // ═══════════════════════════════════════
 
-server.tool(
-  "send_message",
-  "Send a signed message to another agent. Message is written to comms/to-{agent}.json.",
-  {
-    to: z.string().describe("Recipient agent name (e.g., 'aeoess', 'portalx2', 'claude')"),
-    subject: z.string().describe("Message subject"),
-    message: z.string().describe("Message body"),
-    type: z.string().optional().describe("Message type (default: 'message')"),
-    priority: z.string().optional().describe("Priority: low, normal, high, critical"),
-    data: z.record(z.unknown()).optional().describe("Structured data payload"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }] };
+server.registerTool("send_message", { description: "Send a signed message to another agent. Message is written to comms/to-{agent}.json.", inputSchema: z.object({
+        to: z.string().describe("Recipient agent name (e.g., 'aeoess', 'portalx2', 'claude')"),
+        subject: z.string().describe("Message subject"),
+        message: z.string().describe("Message body"),
+        type: z.string().optional().describe("Message type (default: 'message')"),
+        priority: z.string().optional().describe("Priority: low, normal, high, critical"),
+        data: z.record(z.string(), z.unknown()).optional().describe("Structured data payload"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }] };
 
-    const safeTo = sanitizeAgentName(args.to);
-    if (!safeTo) return { content: [{ type: "text" as const, text: "Invalid recipient name" }] };
+        const safeTo = sanitizeAgentName(args.to);
+        if (!safeTo) return { content: [{ type: "text" as const, text: "Invalid recipient name" }] };
 
-    const fromName = getAgentName();
-    const toFile = join(COMMS_PATH, `to-${safeTo}.json`);
-    const fromFile = join(COMMS_PATH, `from-${fromName}.json`);
+        const fromName = getAgentName();
+        const toFile = join(COMMS_PATH, `to-${safeTo}.json`);
+        const fromFile = join(COMMS_PATH, `from-${fromName}.json`);
 
-    if (!isPathWithin(toFile, COMMS_PATH) || !isPathWithin(fromFile, COMMS_PATH)) {
-      return { content: [{ type: "text" as const, text: "Invalid path — recipient name rejected" }] };
-    }
+        if (!isPathWithin(toFile, COMMS_PATH) || !isPathWithin(fromFile, COMMS_PATH)) {
+          return { content: [{ type: "text" as const, text: "Invalid path — recipient name rejected" }] };
+        }
 
-    const msg: CommsMessage = {
-      id: `msg-${fromName}-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      from: state.agentId || fromName,
-      to: args.to,
-      type: args.type || 'message',
-      priority: args.priority || 'normal',
-      subject: args.subject,
-      message: args.message,
-      data: args.data || {},
-      signature: await signMessage(args.subject + args.message),
-    };
+        const msg: CommsMessage = {
+          id: `msg-${fromName}-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          from: state.agentId || fromName,
+          to: args.to,
+          type: args.type || 'message',
+          priority: args.priority || 'normal',
+          subject: args.subject,
+          message: args.message,
+          data: args.data || {},
+          signature: await signMessage(args.subject + args.message),
+        };
 
-    // Write to recipient's inbox
-    const inbox = readCommsFile(toFile);
-    inbox.push(msg);
-    writeCommsFile(toFile, inbox);
+        // Write to recipient's inbox
+        const inbox = readCommsFile(toFile);
+        inbox.push(msg);
+        writeCommsFile(toFile, inbox);
 
-    // Write to sender's outbox
-    const outbox = readCommsFile(fromFile);
-    outbox.push(msg);
-    writeCommsFile(fromFile, outbox);
+        // Write to sender's outbox
+        const outbox = readCommsFile(fromFile);
+        outbox.push(msg);
+        writeCommsFile(fromFile, outbox);
 
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify({
-        sent: true, id: msg.id, to: args.to, subject: args.subject,
-      }, null, 2) }],
-    };
-  }
-);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            sent: true, id: msg.id, to: args.to, subject: args.subject,
+          }, null, 2) }],
+        };
+      });
 
-server.tool(
-  "check_messages",
-  "Check messages addressed to you. Reads from comms/to-{your-agent-name}.json.",
-  {
-    unprocessed_only: z.boolean().optional().describe("Only show unprocessed messages (default: true)"),
-    mark_read: z.boolean().optional().describe("Mark returned messages as processed (default: false)"),
-  },
-  async (args) => {
-    const name = getAgentName();
-    const filePath = join(COMMS_PATH, `to-${name}.json`);
-    if (!isPathWithin(filePath, COMMS_PATH)) {
-      return { content: [{ type: "text" as const, text: "Invalid agent name — path rejected" }] };
-    }
-    let messages = readCommsFile(filePath);
+server.registerTool("check_messages", { description: "Check messages addressed to you. Reads from comms/to-{your-agent-name}.json.", inputSchema: z.object({
+        unprocessed_only: z.boolean().optional().describe("Only show unprocessed messages (default: true)"),
+        mark_read: z.boolean().optional().describe("Mark returned messages as processed (default: false)"),
+      }) }, async (args) => {
+        const name = getAgentName();
+        const filePath = join(COMMS_PATH, `to-${name}.json`);
+        if (!isPathWithin(filePath, COMMS_PATH)) {
+          return { content: [{ type: "text" as const, text: "Invalid agent name — path rejected" }] };
+        }
+        let messages = readCommsFile(filePath);
 
-    const unprocessedOnly = args.unprocessed_only !== false;
-    if (unprocessedOnly) {
-      messages = messages.filter(m => !m.processed);
-    }
+        const unprocessedOnly = args.unprocessed_only !== false;
+        if (unprocessedOnly) {
+          messages = messages.filter(m => !m.processed);
+        }
 
-    if (args.mark_read && messages.length > 0) {
-      const all = readCommsFile(filePath);
-      const ids = new Set(messages.map(m => m.id));
-      for (const m of all) { if (ids.has(m.id)) m.processed = true; }
-      writeCommsFile(filePath, all);
-    }
+        if (args.mark_read && messages.length > 0) {
+          const all = readCommsFile(filePath);
+          const ids = new Set(messages.map(m => m.id));
+          for (const m of all) { if (ids.has(m.id)) m.processed = true; }
+          writeCommsFile(filePath, all);
+        }
 
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify({
-        agent: name, count: messages.length,
-        messages: messages.map(m => ({
-          id: m.id, from: m.from, subject: m.subject,
-          priority: m.priority, timestamp: m.timestamp,
-          message: m.message, data: m.data,
-        })),
-      }, null, 2) }],
-    };
-  }
-);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            agent: name, count: messages.length,
+            messages: messages.map(m => ({
+              id: m.id, from: m.from, subject: m.subject,
+              priority: m.priority, timestamp: m.timestamp,
+              message: m.message, data: m.data,
+            })),
+          }, null, 2) }],
+        };
+      });
 
-server.tool(
-  "broadcast",
-  "Send a signed message to all agents via comms/broadcast.json.",
-  {
-    subject: z.string().describe("Message subject"),
-    message: z.string().describe("Message body"),
-    type: z.string().optional().describe("Message type (default: 'broadcast')"),
-    priority: z.string().optional().describe("Priority: low, normal, high, critical"),
-    data: z.record(z.unknown()).optional().describe("Structured data payload"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }] };
+server.registerTool("broadcast", { description: "Send a signed message to all agents via comms/broadcast.json.", inputSchema: z.object({
+        subject: z.string().describe("Message subject"),
+        message: z.string().describe("Message body"),
+        type: z.string().optional().describe("Message type (default: 'broadcast')"),
+        priority: z.string().optional().describe("Priority: low, normal, high, critical"),
+        data: z.record(z.string(), z.unknown()).optional().describe("Structured data payload"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }] };
 
-    const fromName = getAgentName();
-    const broadcastFile = join(COMMS_PATH, 'broadcast.json');
+        const fromName = getAgentName();
+        const broadcastFile = join(COMMS_PATH, 'broadcast.json');
 
-    const msg: CommsMessage = {
-      id: `bcast-${fromName}-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      from: state.agentId || fromName,
-      to: 'all',
-      type: args.type || 'broadcast',
-      priority: args.priority || 'normal',
-      subject: args.subject,
-      message: args.message,
-      data: args.data || {},
-      signature: await signMessage(args.subject + args.message),
-    };
+        const msg: CommsMessage = {
+          id: `bcast-${fromName}-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          from: state.agentId || fromName,
+          to: 'all',
+          type: args.type || 'broadcast',
+          priority: args.priority || 'normal',
+          subject: args.subject,
+          message: args.message,
+          data: args.data || {},
+          signature: await signMessage(args.subject + args.message),
+        };
 
-    const broadcasts = readCommsFile(broadcastFile);
-    broadcasts.push(msg);
-    writeCommsFile(broadcastFile, broadcasts);
+        const broadcasts = readCommsFile(broadcastFile);
+        broadcasts.push(msg);
+        writeCommsFile(broadcastFile, broadcasts);
 
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify({
-        broadcast: true, id: msg.id, subject: args.subject,
-      }, null, 2) }],
-    };
-  }
-);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            broadcast: true, id: msg.id, subject: args.subject,
+          }, null, 2) }],
+        };
+      });
 
-server.tool(
-  "list_agents",
-  "List registered agents from the agent registry (agora/agents.json).",
-  {
-    status_filter: z.string().optional().describe("Filter by status: active, pending, retired (default: all)"),
-  },
-  async (args) => {
-    let agents = loadAgentsRegistry();
+server.registerTool("list_agents", { description: "List registered agents from the agent registry (agora/agents.json).", inputSchema: z.object({
+        status_filter: z.string().optional().describe("Filter by status: active, pending, retired (default: all)"),
+      }) }, async (args) => {
+        let agents = loadAgentsRegistry();
 
-    if (args.status_filter) {
-      agents = agents.filter(a => a.status === args.status_filter);
-    }
+        if (args.status_filter) {
+          agents = agents.filter(a => a.status === args.status_filter);
+        }
 
-    return {
-      content: [{ type: "text" as const, text: JSON.stringify({
-        count: agents.length,
-        agents: agents.map(a => ({
-          agentId: a.agentId, name: a.agentName,
-          status: a.status, role: a.role,
-          runtime: a.runtime, capabilities: a.capabilities,
-        })),
-      }, null, 2) }],
-    };
-  }
-);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({
+            count: agents.length,
+            agents: agents.map(a => ({
+              agentId: a.agentId, name: a.agentName,
+              status: a.status, role: a.role,
+              runtime: a.runtime, capabilities: a.capabilities,
+            })),
+          }, null, 2) }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // VALUES / POLICY TOOLS (Layer 2 + 5)
 // ═══════════════════════════════════════
 
-server.tool(
-  "load_values_floor",
-  "Load a Values Floor from YAML. Sets the floor principles for policy evaluation.",
-  {
-    yaml: z.string().describe("Values Floor YAML content"),
-  },
-  async (args) => {
-    try {
-      const floor = loadFloor(args.yaml);
-      state.floorYaml = args.yaml;
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            loaded: true,
-            version: floor.version,
-            principles: floor.floor.length,
-            names: floor.floor.map((p: any) => p.name),
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Failed to load floor", e) }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "attest_to_floor",
-  "Attest that your agent agrees to abide by the loaded Values Floor.",
-  {
-    floor_version: z.string().describe("Version of the floor to attest to"),
-    extensions: z.array(z.string()).optional().describe("Optional additional extensions"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    if (!state.floorYaml) return { content: [{ type: "text" as const, text: 'No floor loaded. Use load_values_floor first.' }], isError: true };
-
-    const floor = loadFloor(state.floorYaml);
-    const attestation = attestFloor(
-      state.agentId || 'anonymous',
-      state.agentKey!,
-      args.floor_version,
-      args.extensions || [],
-      state.privateKey!,
-    );
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          attested: true,
-          agentId: attestation.agentId,
-          floorVersion: attestation.floorVersion,
-          extensions: attestation.extensions,
-          signed: !!attestation.commitment,
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "create_intent",
-  "Declare an intent to perform an action. First step of the 3-signature chain.",
-  {
-    action_type: z.string().describe("What type of action (e.g. 'web_search', 'commerce:checkout')"),
-    target: z.string().describe("What the action operates on"),
-    scope_required: z.string().describe("Which delegation scope is needed"),
-    spend_amount: z.number().optional().describe("Expected spend amount"),
-    spend_currency: z.string().optional().describe("Spend currency (e.g. 'usd')"),
-    context: z.string().optional().describe("Why the agent wants to do this"),
-    delegation_id: z.string().describe("Delegation ID authorizing this action"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-
-    const intent = createActionIntent({
-      agentId: state.agentId || 'anonymous',
-      agentPublicKey: state.agentKey!,
-      delegationId: args.delegation_id,
-      action: {
-        type: args.action_type,
-        target: args.target,
-        scopeRequired: args.scope_required,
-        spend: args.spend_amount ? { amount: args.spend_amount, currency: args.spend_currency || 'usd' } : undefined,
-      },
-      context: args.context,
-      privateKey: state.privateKey!,
-    });
-
-    state.intents.set(intent.intentId, intent);
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          intentId: intent.intentId,
-          action: intent.action,
-          signed: !!intent.signature,
-          note: 'Intent created. Use evaluate_intent for policy decision (signature 2 of 3).',
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "evaluate_intent",
-  "[OPERATOR] Evaluate an intent against the Values Floor policy engine. Returns real pass/fail verdict.",
-  {
-    intent_id: z.string().describe("Intent ID from create_intent"),
-    delegation_scope: z.array(z.string()).describe("Delegation scope for context"),
-    delegation_spend_limit: z.number().describe("Delegation spend limit"),
-    delegation_spent: z.number().default(0).describe("Amount already spent"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    if (!state.floorYaml) return { content: [{ type: "text" as const, text: 'No floor loaded. Use load_values_floor first.' }], isError: true };
-
-    const intent = state.intents.get(args.intent_id);
-    if (!intent) return { content: [{ type: "text" as const, text: `Intent ${args.intent_id} not found. Use create_intent first.` }], isError: true };
-
-    const floor = loadFloor(state.floorYaml);
-    const validator = new FloorValidatorV1();
-
-    const validationContext = {
-      floorVersion: floor.version,
-      floorPrinciples: floor.floor.map((p: any) => ({
-        id: p.id, name: p.name,
-        enforcement: p.enforcement,
-        weight: p.weight,
-      })),
-      delegation: {
-        scope: args.delegation_scope,
-        spendLimit: args.delegation_spend_limit,
-        spentAmount: args.delegation_spent,
-        expiresAt: new Date(Date.now() + 86400000).toISOString(),
-        revoked: false,
-        currentDepth: 0,
-        maxDepth: 2,
-      },
-      agentRegistered: true,
-      agentAttestationValid: true,
-    };
-
-    try {
-      const decision = evaluateIntent({
-        intent,
-        validator,
-        validationContext,
-        evaluatorId: state.agentId || 'mcp-evaluator',
-        evaluatorPublicKey: state.agentKey!,
-        evaluatorPrivateKey: state.privateKey!,
+server.registerTool("load_values_floor", { description: "Load a Values Floor from YAML. Sets the floor principles for policy evaluation.", inputSchema: z.object({
+        yaml: z.string().describe("Values Floor YAML content"),
+      }) }, async (args) => {
+        try {
+          const floor = loadFloor(args.yaml);
+          state.floorYaml = args.yaml;
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                loaded: true,
+                version: floor.version,
+                principles: floor.floor.length,
+                names: floor.floor.map((p: any) => p.name),
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Failed to load floor", e) }], isError: true };
+        }
       });
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            decisionId: decision.decisionId,
-            intentId: decision.intentId,
-            verdict: decision.verdict,
-            reason: decision.reason,
-            principlesEvaluated: decision.principlesEvaluated.length,
-            constraints: decision.constraints,
-            floorVersion: decision.floorVersion,
-            signed: true,
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Policy evaluation failed", e) }], isError: true };
-    }
-  }
-);
+server.registerTool("attest_to_floor", { description: "Attest that your agent agrees to abide by the loaded Values Floor.", inputSchema: z.object({
+        floor_version: z.string().describe("Version of the floor to attest to"),
+        extensions: z.array(z.string()).optional().describe("Optional additional extensions"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        if (!state.floorYaml) return { content: [{ type: "text" as const, text: 'No floor loaded. Use load_values_floor first.' }], isError: true };
+
+        const floor = loadFloor(state.floorYaml);
+        const attestation = attestFloor(
+          state.agentId || 'anonymous',
+          state.agentKey!,
+          args.floor_version,
+          args.extensions || [],
+          state.privateKey!,
+        );
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              attested: true,
+              agentId: attestation.agentId,
+              floorVersion: attestation.floorVersion,
+              extensions: attestation.extensions,
+              signed: !!attestation.commitment,
+            }, null, 2),
+          }],
+        };
+      });
+
+server.registerTool("create_intent", { description: "Declare an intent to perform an action. First step of the 3-signature chain.", inputSchema: z.object({
+        action_type: z.string().describe("What type of action (e.g. 'web_search', 'commerce:checkout')"),
+        target: z.string().describe("What the action operates on"),
+        scope_required: z.string().describe("Which delegation scope is needed"),
+        spend_amount: z.number().optional().describe("Expected spend amount"),
+        spend_currency: z.string().optional().describe("Spend currency (e.g. 'usd')"),
+        context: z.string().optional().describe("Why the agent wants to do this"),
+        delegation_id: z.string().describe("Delegation ID authorizing this action"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+        const intent = createActionIntent({
+          agentId: state.agentId || 'anonymous',
+          agentPublicKey: state.agentKey!,
+          delegationId: args.delegation_id,
+          action: {
+            type: args.action_type,
+            target: args.target,
+            scopeRequired: args.scope_required,
+            spend: args.spend_amount ? { amount: args.spend_amount, currency: args.spend_currency || 'usd' } : undefined,
+          },
+          context: args.context,
+          privateKey: state.privateKey!,
+        });
+
+        state.intents.set(intent.intentId, intent);
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              intentId: intent.intentId,
+              action: intent.action,
+              signed: !!intent.signature,
+              note: 'Intent created. Use evaluate_intent for policy decision (signature 2 of 3).',
+            }, null, 2),
+          }],
+        };
+      });
+
+server.registerTool("evaluate_intent", { description: "[OPERATOR] Evaluate an intent against the Values Floor policy engine. Returns real pass/fail verdict.", inputSchema: z.object({
+        intent_id: z.string().describe("Intent ID from create_intent"),
+        delegation_scope: z.array(z.string()).describe("Delegation scope for context"),
+        delegation_spend_limit: z.number().describe("Delegation spend limit"),
+        delegation_spent: z.number().default(0).describe("Amount already spent"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        if (!state.floorYaml) return { content: [{ type: "text" as const, text: 'No floor loaded. Use load_values_floor first.' }], isError: true };
+
+        const intent = state.intents.get(args.intent_id);
+        if (!intent) return { content: [{ type: "text" as const, text: `Intent ${args.intent_id} not found. Use create_intent first.` }], isError: true };
+
+        const floor = loadFloor(state.floorYaml);
+        const validator = new FloorValidatorV1();
+
+        const validationContext = {
+          floorVersion: floor.version,
+          floorPrinciples: floor.floor.map((p: any) => ({
+            id: p.id, name: p.name,
+            enforcement: p.enforcement,
+            weight: p.weight,
+          })),
+          delegation: {
+            scope: args.delegation_scope,
+            spendLimit: args.delegation_spend_limit,
+            spentAmount: args.delegation_spent,
+            expiresAt: new Date(Date.now() + 86400000).toISOString(),
+            revoked: false,
+            currentDepth: 0,
+            maxDepth: 2,
+          },
+          agentRegistered: true,
+          agentAttestationValid: true,
+        };
+
+        try {
+          const decision = evaluateIntent({
+            intent,
+            validator,
+            validationContext,
+            evaluatorId: state.agentId || 'mcp-evaluator',
+            evaluatorPublicKey: state.agentKey!,
+            evaluatorPrivateKey: state.privateKey!,
+          });
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                decisionId: decision.decisionId,
+                intentId: decision.intentId,
+                verdict: decision.verdict,
+                reason: decision.reason,
+                principlesEvaluated: decision.principlesEvaluated.length,
+                constraints: decision.constraints,
+                floorVersion: decision.floorVersion,
+                signed: true,
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Policy evaluation failed", e) }], isError: true };
+        }
+      });
 
 // ═══════════════════════════════════════
 // COMMERCE TOOLS (Layer 8)
 // ═══════════════════════════════════════
 
-server.tool(
-  "commerce_preflight",
-  "[moved to gateway in SDK 3.3.0] The 6-gate commerce preflight orchestration moved out of the SDK and MCP into the AEOESS gateway. This tool no longer runs the pipeline locally; it returns a machine-readable deprecation notice pointing to the gateway commerce endpoint. Compose the pure gate predicates from the SDK yourself, or call the gateway.",
-  {
-    merchant_name: z.string().describe("Merchant to purchase from"),
-    amount: z.number().describe("Purchase amount"),
-    currency: z.string().default("usd").describe("Currency code"),
-    delegation_id: z.string().describe("Commerce delegation ID"),
-    agent_id: z.string().describe("Agent making the purchase"),
-  },
-  async (_args) => {
-    recordBehavior('commerce_preflight');
-    // commercePreflight() became a throw-only migration stub in agent-passport-system 3.3.0
-    // (the orchestrator moved to the gateway). Rather than let that stub throw, return a clean,
-    // machine-readable deprecation result so tools/list stays honest and calls fail predictably.
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          permitted: false,
-          error: 'commerce_preflight_moved_to_gateway',
-          reason: 'Commerce preflight orchestration was removed from the SDK and MCP in agent-passport-system 3.3.0. Run the 6-gate preflight via the AEOESS gateway commerce endpoint.',
-          gateway_endpoint: 'https://gateway.aeoess.com',
-          sdk_note: 'The SDK still exports the pure gate predicates (checkPassportGate, checkScopeGate, checkSpendGate, checkMerchantGate, checkWalletGate) and signCommerceReceipt, so callers can compose preflight themselves.',
-        }, null, 2),
-      }],
-      isError: true,
-    };
-  }
-);
+server.registerTool("commerce_preflight", { description: "[moved to gateway in SDK 3.3.0] The 6-gate commerce preflight orchestration moved out of the SDK and MCP into the AEOESS gateway. This tool no longer runs the pipeline locally; it returns a machine-readable deprecation notice pointing to the gateway commerce endpoint. Compose the pure gate predicates from the SDK yourself, or call the gateway.", inputSchema: z.object({
+        merchant_name: z.string().describe("Merchant to purchase from"),
+        amount: z.number().describe("Purchase amount"),
+        currency: z.string().default("usd").describe("Currency code"),
+        delegation_id: z.string().describe("Commerce delegation ID"),
+        agent_id: z.string().describe("Agent making the purchase"),
+      }) }, async (_args) => {
+        recordBehavior('commerce_preflight');
+        // commercePreflight() became a throw-only migration stub in agent-passport-system 3.3.0
+        // (the orchestrator moved to the gateway). Rather than let that stub throw, return a clean,
+        // machine-readable deprecation result so tools/list stays honest and calls fail predictably.
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              permitted: false,
+              error: 'commerce_preflight_moved_to_gateway',
+              reason: 'Commerce preflight orchestration was removed from the SDK and MCP in agent-passport-system 3.3.0. Run the 6-gate preflight via the AEOESS gateway commerce endpoint.',
+              gateway_endpoint: 'https://gateway.aeoess.com',
+              sdk_note: 'The SDK still exports the pure gate predicates (checkPassportGate, checkScopeGate, checkSpendGate, checkMerchantGate, checkWalletGate) and signCommerceReceipt, so callers can compose preflight themselves.',
+            }, null, 2),
+          }],
+          isError: true,
+        };
+      });
 
-server.tool(
-  "get_commerce_spend",
-  "Get spend analytics for a commerce delegation.",
-  {
-    agent_id: z.string().describe("Agent ID"),
-    delegation_id: z.string().describe("Commerce delegation ID"),
-    spend_limit: z.number().describe("Total allowed spend"),
-  },
-  async (args) => {
-    // Report spend recorded on the session delegation instead of always reporting 0. Caveat:
-    // nothing in the MCP yet increments sessionDel.spentAmount (a metering record path is a
-    // decision flagged for Tima), so this reflects whatever the session state holds.
-    const sessionDel = state.delegations.get(args.delegation_id);
-    const commerceDel = {
-      ...createCommerceDelegation({
-        agentId: args.agent_id,
-        delegationId: args.delegation_id,
-        spendLimit: args.spend_limit,
-      }),
-      spentAmount: (sessionDel as { spentAmount?: number } | undefined)?.spentAmount ?? 0,
-    };
+server.registerTool("get_commerce_spend", { description: "Get spend analytics for a commerce delegation.", inputSchema: z.object({
+        agent_id: z.string().describe("Agent ID"),
+        delegation_id: z.string().describe("Commerce delegation ID"),
+        spend_limit: z.number().describe("Total allowed spend"),
+      }) }, async (args) => {
+        // Report spend recorded on the session delegation instead of always reporting 0. Caveat:
+        // nothing in the MCP yet increments sessionDel.spentAmount (a metering record path is a
+        // decision flagged for Tima), so this reflects whatever the session state holds.
+        const sessionDel = state.delegations.get(args.delegation_id);
+        const commerceDel = {
+          ...createCommerceDelegation({
+            agentId: args.agent_id,
+            delegationId: args.delegation_id,
+            spendLimit: args.spend_limit,
+          }),
+          spentAmount: (sessionDel as { spentAmount?: number } | undefined)?.spentAmount ?? 0,
+        };
 
-    const summary = getSpendSummary(commerceDel);
+        const summary = getSpendSummary(commerceDel);
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify(summary, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify(summary, null, 2),
+          }],
+        };
+      });
 
-server.tool(
-  "request_human_approval",
-  "Request human approval for a high-value purchase.",
-  {
-    agent_id: z.string().describe("Agent requesting approval"),
-    merchant: z.string().describe("Merchant name"),
-    amount: z.number().describe("Purchase amount"),
-    currency: z.string().default("usd").describe("Currency"),
-    reason: z.string().describe("Why this purchase is needed"),
-    expires_minutes: z.number().default(30).describe("Minutes until approval expires"),
-  },
-  async (args) => {
-    const approval = requestHumanApproval({
-      agentId: args.agent_id,
-      delegationId: 'pending',
-      merchantName: args.merchant,
-      items: [{ id: 'item-1', skuId: 'manual', name: args.reason, quantity: 1, unitPrice: { amount: args.amount, currency: args.currency }, totalPrice: { amount: args.amount, currency: args.currency } }],
-      totalAmount: { amount: args.amount, currency: args.currency },
-      reason: args.reason,
-      expiresInMinutes: args.expires_minutes,
-    });
+server.registerTool("request_human_approval", { description: "Request human approval for a high-value purchase.", inputSchema: z.object({
+        agent_id: z.string().describe("Agent requesting approval"),
+        merchant: z.string().describe("Merchant name"),
+        amount: z.number().describe("Purchase amount"),
+        currency: z.string().default("usd").describe("Currency"),
+        reason: z.string().describe("Why this purchase is needed"),
+        expires_minutes: z.number().default(30).describe("Minutes until approval expires"),
+      }) }, async (args) => {
+        const approval = requestHumanApproval({
+          agentId: args.agent_id,
+          delegationId: 'pending',
+          merchantName: args.merchant,
+          items: [{ id: 'item-1', skuId: 'manual', name: args.reason, quantity: 1, unitPrice: { amount: args.amount, currency: args.currency }, totalPrice: { amount: args.amount, currency: args.currency } }],
+          totalAmount: { amount: args.amount, currency: args.currency },
+          reason: args.reason,
+          expiresInMinutes: args.expires_minutes,
+        });
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          requestId: approval.requestId,
-          status: approval.status,
-          expiresAt: approval.expiresAt,
-          note: 'Approval request created. Human must approve before checkout can proceed.',
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              requestId: approval.requestId,
+              status: approval.status,
+              expiresAt: approval.expiresAt,
+              note: 'Approval request created. Human must approve before checkout can proceed.',
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // AGENT CONTEXT — Enforcement Middleware
 // ═══════════════════════════════════════
 
-server.tool(
-  "create_agent_context",
-  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Create an enforcement context that automatically runs every action through the 3-signature policy chain.",
-  {
-    name: z.string().describe("Agent name"),
-    mission: z.string().describe("Agent mission statement"),
-    enforcement: z.enum(["auto", "manual", "strict"]).default("auto").describe("Enforcement level"),
-    delegated_scopes: z.array(z.string()).default([]).describe("Scopes to delegate"),
-    spend_limit: z.number().default(1000).describe("Maximum spend allowed"),
-  },
-  async (_args) => movedToGateway("create_agent_context")
-);
+server.registerTool("create_agent_context", { description: "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Create an enforcement context that automatically runs every action through the 3-signature policy chain.", inputSchema: z.object({
+        name: z.string().describe("Agent name"),
+        mission: z.string().describe("Agent mission statement"),
+        enforcement: z.enum(["auto", "manual", "strict"]).default("auto").describe("Enforcement level"),
+        delegated_scopes: z.array(z.string()).default([]).describe("Scopes to delegate"),
+        spend_limit: z.number().default(1000).describe("Maximum spend allowed"),
+      }) }, async (_args) => movedToGateway("create_agent_context"));
 
-server.tool(
-  "execute_with_context",
-  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Execute an action through the enforcement context.",
-  {
-    action_type: z.string().describe("Action type (e.g. 'api:fetch', 'data:write', 'commerce:checkout')"),
-    target: z.string().describe("Target of the action (e.g. URL, file path, resource ID)"),
-    scope: z.string().describe("Required scope for this action (must match a delegated scope)"),
-    estimated_spend: z.number().optional().describe("Estimated spend for commerce actions"),
-  },
-  async (_args) => movedToGateway("execute_with_context")
-);
+server.registerTool("execute_with_context", { description: "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Execute an action through the enforcement context.", inputSchema: z.object({
+        action_type: z.string().describe("Action type (e.g. 'api:fetch', 'data:write', 'commerce:checkout')"),
+        target: z.string().describe("Target of the action (e.g. URL, file path, resource ID)"),
+        scope: z.string().describe("Required scope for this action (must match a delegated scope)"),
+        estimated_spend: z.number().optional().describe("Estimated spend for commerce actions"),
+      }) }, async (_args) => movedToGateway("execute_with_context"));
 
-server.tool(
-  "complete_action",
-  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Complete a permitted action and get the full 3-signature proof chain.",
-  {
-    intent_id: z.string().describe("Intent ID from execute_with_context result"),
-    status: z.enum(["success", "failure", "partial"]).describe("Outcome of the action"),
-    summary: z.string().describe("Brief description of what was accomplished"),
-  },
-  async (_args) => movedToGateway("complete_action")
-);
+server.registerTool("complete_action", { description: "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Complete a permitted action and get the full 3-signature proof chain.", inputSchema: z.object({
+        intent_id: z.string().describe("Intent ID from execute_with_context result"),
+        status: z.enum(["success", "failure", "partial"]).describe("Outcome of the action"),
+        summary: z.string().describe("Brief description of what was accomplished"),
+      }) }, async (_args) => movedToGateway("complete_action"));
 
 // ═══════════════════════════════════════
 // PRINCIPAL IDENTITY TOOLS
 // ═══════════════════════════════════════
 
-server.tool(
-  "create_principal",
-  "Create a principal identity (human or org behind agents). Gets its own Ed25519 keypair.",
-  {
-    display_name: z.string().describe("Human-readable name (e.g. 'Tima', 'Acme Corp')"),
-    domain: z.string().optional().describe("Verifiable domain (e.g. 'aeoess.com')"),
-    jurisdiction: z.string().optional().describe("Legal jurisdiction (e.g. 'US', 'EU')"),
-    contact_channel: z.string().optional().describe("Contact method (e.g. 'telegram:@aeoess')"),
-    disclosure_level: z.enum(["public", "verified-only", "minimal"]).default("public").describe("How much identity to reveal"),
-  },
-  async (args) => {
-    const { principal, keyPair } = createPrincipalIdentity({
-      displayName: args.display_name,
-      domain: args.domain,
-      jurisdiction: args.jurisdiction,
-      contactChannel: args.contact_channel,
-      disclosureLevel: args.disclosure_level,
-    });
+server.registerTool("create_principal", { description: "Create a principal identity (human or org behind agents). Gets its own Ed25519 keypair.", inputSchema: z.object({
+        display_name: z.string().describe("Human-readable name (e.g. 'Tima', 'Acme Corp')"),
+        domain: z.string().optional().describe("Verifiable domain (e.g. 'aeoess.com')"),
+        jurisdiction: z.string().optional().describe("Legal jurisdiction (e.g. 'US', 'EU')"),
+        contact_channel: z.string().optional().describe("Contact method (e.g. 'telegram:@aeoess')"),
+        disclosure_level: z.enum(["public", "verified-only", "minimal"]).default("public").describe("How much identity to reveal"),
+      }) }, async (args) => {
+        const { principal, keyPair } = createPrincipalIdentity({
+          displayName: args.display_name,
+          domain: args.domain,
+          jurisdiction: args.jurisdiction,
+          contactChannel: args.contact_channel,
+          disclosureLevel: args.disclosure_level,
+        });
 
-    state.principal = principal;
-    state.principalPrivateKey = keyPair.privateKey;
-    state.fleet = createFleet(principal);
+        state.principal = principal;
+        state.principalPrivateKey = keyPair.privateKey;
+        state.fleet = createFleet(principal);
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          principalId: principal.principalId,
-          displayName: principal.displayName,
-          publicKey: principal.publicKey.slice(0, 16) + '...',
-          privateKey: keyPair.privateKey.slice(0, 16) + '... (store securely)',
-          domain: principal.domain,
-          disclosureLevel: principal.disclosureLevel,
-          note: 'Principal created. Use endorse_agent to sign off on agents.',
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              principalId: principal.principalId,
+              displayName: principal.displayName,
+              publicKey: principal.publicKey.slice(0, 16) + '...',
+              privateKey: keyPair.privateKey.slice(0, 16) + '... (store securely)',
+              domain: principal.domain,
+              disclosureLevel: principal.disclosureLevel,
+              note: 'Principal created. Use endorse_agent to sign off on agents.',
+            }, null, 2),
+          }],
+        };
+      });
 
-server.tool(
-  "endorse_agent",
-  "Endorse an agent as a principal. Creates a cryptographic chain: principal → agent.",
-  {
-    agent_id: z.string().describe("Agent ID to endorse"),
-    agent_public_key: z.string().describe("Agent's Ed25519 public key"),
-    scope: z.array(z.string()).describe("What the agent can do on principal's behalf"),
-    relationship: z.enum(["creator", "operator", "employer", "sponsor"]).describe("How principal relates to agent"),
-    expires_in_days: z.number().default(365).describe("Days until endorsement expires"),
-  },
-  async (args) => {
-    recordBehavior('endorse_agent');
-    // Consilium signal #5: endorsement latency. T+200ms = automation. T+3h = human.
-    const issuedAt = state.issuanceTimestamps.get(args.agent_id);
-    if (issuedAt && !state.endorsementLatencies.has(args.agent_id)) {
-      state.endorsementLatencies.set(args.agent_id, Date.now() - issuedAt);
-    }
-    if (!state.principal || !state.principalPrivateKey) {
-      return { content: [{ type: "text" as const, text: 'No principal identity. Call create_principal first.' }], isError: true };
-    }
+server.registerTool("endorse_agent", { description: "Endorse an agent as a principal. Creates a cryptographic chain: principal → agent.", inputSchema: z.object({
+        agent_id: z.string().describe("Agent ID to endorse"),
+        agent_public_key: z.string().describe("Agent's Ed25519 public key"),
+        scope: z.array(z.string()).describe("What the agent can do on principal's behalf"),
+        relationship: z.enum(["creator", "operator", "employer", "sponsor"]).describe("How principal relates to agent"),
+        expires_in_days: z.number().default(365).describe("Days until endorsement expires"),
+      }) }, async (args) => {
+        recordBehavior('endorse_agent');
+        // Consilium signal #5: endorsement latency. T+200ms = automation. T+3h = human.
+        const issuedAt = state.issuanceTimestamps.get(args.agent_id);
+        if (issuedAt && !state.endorsementLatencies.has(args.agent_id)) {
+          state.endorsementLatencies.set(args.agent_id, Date.now() - issuedAt);
+        }
+        if (!state.principal || !state.principalPrivateKey) {
+          return { content: [{ type: "text" as const, text: 'No principal identity. Call create_principal first.' }], isError: true };
+        }
 
-    const endorsement = endorseAgent({
-      principal: state.principal,
-      principalPrivateKey: state.principalPrivateKey,
-      agentId: args.agent_id,
-      agentPublicKey: args.agent_public_key,
-      scope: args.scope,
-      relationship: args.relationship,
-      expiresInDays: args.expires_in_days,
-    });
+        const endorsement = endorseAgent({
+          principal: state.principal,
+          principalPrivateKey: state.principalPrivateKey,
+          agentId: args.agent_id,
+          agentPublicKey: args.agent_public_key,
+          scope: args.scope,
+          relationship: args.relationship,
+          expiresInDays: args.expires_in_days,
+        });
 
-    state.endorsements.set(endorsement.endorsementId, endorsement);
-    if (state.fleet) {
-      state.fleet = addToFleet(state.fleet, endorsement);
-    }
+        state.endorsements.set(endorsement.endorsementId, endorsement);
+        if (state.fleet) {
+          state.fleet = addToFleet(state.fleet, endorsement);
+        }
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          endorsementId: endorsement.endorsementId,
-          principalId: endorsement.principalId,
-          agentId: endorsement.agentId,
-          relationship: endorsement.relationship,
-          scope: endorsement.scope,
-          expiresAt: endorsement.expiresAt,
-          note: 'Agent endorsed. The endorsement signature can be embedded in the agent\'s passport via endorse_passport.',
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              endorsementId: endorsement.endorsementId,
+              principalId: endorsement.principalId,
+              agentId: endorsement.agentId,
+              relationship: endorsement.relationship,
+              scope: endorsement.scope,
+              expiresAt: endorsement.expiresAt,
+              note: 'Agent endorsed. The endorsement signature can be embedded in the agent\'s passport via endorse_passport.',
+            }, null, 2),
+          }],
+        };
+      });
 
-server.tool(
-  "verify_endorsement",
-  "Verify a principal's endorsement of an agent. Checks cryptographic signature.",
-  {
-    endorsement_id: z.string().describe("Endorsement ID to verify"),
-  },
-  async (args) => {
-    const endorsement = state.endorsements.get(args.endorsement_id);
-    if (!endorsement) {
-      return { content: [{ type: "text" as const, text: `Endorsement ${args.endorsement_id} not found in session.` }], isError: true };
-    }
+server.registerTool("verify_endorsement", { description: "Verify a principal's endorsement of an agent. Checks cryptographic signature.", inputSchema: z.object({
+        endorsement_id: z.string().describe("Endorsement ID to verify"),
+      }) }, async (args) => {
+        const endorsement = state.endorsements.get(args.endorsement_id);
+        if (!endorsement) {
+          return { content: [{ type: "text" as const, text: `Endorsement ${args.endorsement_id} not found in session.` }], isError: true };
+        }
 
-    const result = verifyEndorsement(endorsement);
+        const result = verifyEndorsement(endorsement);
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          valid: result.valid,
-          expired: result.expired,
-          revoked: result.revoked,
-          principalId: result.principalId,
-          agentId: result.agentId,
-          errors: result.errors,
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              valid: result.valid,
+              expired: result.expired,
+              revoked: result.revoked,
+              principalId: result.principalId,
+              agentId: result.agentId,
+              errors: result.errors,
+            }, null, 2),
+          }],
+        };
+      });
 
-server.tool(
-  "revoke_endorsement",
-  "Revoke a principal's endorsement of an agent. 'I no longer authorize this agent.'",
-  {
-    endorsement_id: z.string().describe("Endorsement ID to revoke"),
-    reason: z.string().describe("Why the endorsement is being revoked"),
-  },
-  async (args) => {
-    const endorsement = state.endorsements.get(args.endorsement_id);
-    if (!endorsement) {
-      return { content: [{ type: "text" as const, text: `Endorsement ${args.endorsement_id} not found.` }], isError: true };
-    }
+server.registerTool("revoke_endorsement", { description: "Revoke a principal's endorsement of an agent. 'I no longer authorize this agent.'", inputSchema: z.object({
+        endorsement_id: z.string().describe("Endorsement ID to revoke"),
+        reason: z.string().describe("Why the endorsement is being revoked"),
+      }) }, async (args) => {
+        const endorsement = state.endorsements.get(args.endorsement_id);
+        if (!endorsement) {
+          return { content: [{ type: "text" as const, text: `Endorsement ${args.endorsement_id} not found.` }], isError: true };
+        }
 
-    const revoked = revokeEndorsement(endorsement, args.reason);
-    state.endorsements.set(args.endorsement_id, revoked);
+        const revoked = revokeEndorsement(endorsement, args.reason);
+        state.endorsements.set(args.endorsement_id, revoked);
 
-    if (state.fleet) {
-      state.fleet = revokeFromFleet(state.fleet, revoked.agentId);
-    }
+        if (state.fleet) {
+          state.fleet = revokeFromFleet(state.fleet, revoked.agentId);
+        }
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          revoked: true,
-          endorsementId: revoked.endorsementId,
-          agentId: revoked.agentId,
-          reason: revoked.revokedReason,
-          revokedAt: revoked.revokedAt,
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              revoked: true,
+              endorsementId: revoked.endorsementId,
+              agentId: revoked.agentId,
+              reason: revoked.revokedReason,
+              revokedAt: revoked.revokedAt,
+            }, null, 2),
+          }],
+        };
+      });
 
-server.tool(
-  "create_disclosure",
-  "Create a selective disclosure of principal identity. Controls how much info is revealed.",
-  {
-    level: z.enum(["public", "verified-only", "minimal"]).describe("Disclosure level: public (everything), verified-only (id+key+domain), minimal (hash+DID only)"),
-  },
-  async (args) => {
-    if (!state.principal || !state.principalPrivateKey) {
-      return { content: [{ type: "text" as const, text: 'No principal identity. Call create_principal first.' }], isError: true };
-    }
+server.registerTool("create_disclosure", { description: "Create a selective disclosure of principal identity. Controls how much info is revealed.", inputSchema: z.object({
+        level: z.enum(["public", "verified-only", "minimal"]).describe("Disclosure level: public (everything), verified-only (id+key+domain), minimal (hash+DID only)"),
+      }) }, async (args) => {
+        if (!state.principal || !state.principalPrivateKey) {
+          return { content: [{ type: "text" as const, text: 'No principal identity. Call create_principal first.' }], isError: true };
+        }
 
-    const disclosure = createDisclosure(state.principal, state.principalPrivateKey, args.level);
+        const disclosure = createDisclosure(state.principal, state.principalPrivateKey, args.level);
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          disclosureId: disclosure.disclosureId,
-          level: disclosure.level,
-          revealedFields: disclosure.revealedFields,
-          proof: disclosure.proof.slice(0, 16) + '...',
-          note: 'Share this disclosure with other agents. They can verify it with verify_disclosure.',
-        }, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              disclosureId: disclosure.disclosureId,
+              level: disclosure.level,
+              revealedFields: disclosure.revealedFields,
+              proof: disclosure.proof.slice(0, 16) + '...',
+              note: 'Share this disclosure with other agents. They can verify it with verify_disclosure.',
+            }, null, 2),
+          }],
+        };
+      });
 
-server.tool(
-  "get_fleet_status",
-  "Get status of all agents endorsed by the current principal.",
-  {},
-  async () => {
-    if (!state.fleet) {
-      return { content: [{ type: "text" as const, text: 'No fleet. Call create_principal first.' }], isError: true };
-    }
+server.registerTool("get_fleet_status", { description: "Get status of all agents endorsed by the current principal.", inputSchema: z.object({}) }, async () => {
+        if (!state.fleet) {
+          return { content: [{ type: "text" as const, text: 'No fleet. Call create_principal first.' }], isError: true };
+        }
 
-    const status = getFleetStatus(state.fleet);
+        const status = getFleetStatus(state.fleet);
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify(status, null, 2),
-      }],
-    };
-  }
-);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify(status, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // Reputation-Gated Authority (Layer 9)
@@ -3281,233 +3030,208 @@ function resolveTier(score: number, demotionCount: number = 0): AuthorityTier {
   return { ...def, origin: 'earned' as const, demotionCount };
 }
 
-server.tool(
-  "resolve_authority",
-  "Compute effective reputation score and authority tier for an agent in a given scope. Returns tier name, autonomy level, spend limit, and effective score.",
-  {
-    agentId: z.string().describe("Agent ID to check"),
-    principalId: z.string().describe("Principal who delegated authority"),
-    scope: z.string().describe("Scope to check reputation in (e.g. 'code_execution', 'commerce')"),
-  },
-  async ({ agentId, principalId, scope }) => {
-    const key = `${principalId}:${agentId}:${scope}`;
-    let rep = state.reputations.get(key);
+server.registerTool("resolve_authority", { description: "Compute effective reputation score and authority tier for an agent in a given scope. Returns tier name, autonomy level, spend limit, and effective score.", inputSchema: z.object({
+        agentId: z.string().describe("Agent ID to check"),
+        principalId: z.string().describe("Principal who delegated authority"),
+        scope: z.string().describe("Scope to check reputation in (e.g. 'code_execution', 'commerce')"),
+      }) }, async ({ agentId, principalId, scope }) => {
+        const key = `${principalId}:${agentId}:${scope}`;
+        let rep = state.reputations.get(key);
 
-    if (!rep) {
-      rep = createScopedReputation(principalId, agentId, scope);
-      state.reputations.set(key, rep);
-    }
+        if (!rep) {
+          rep = createScopedReputation(principalId, agentId, scope);
+          state.reputations.set(key, rep);
+        }
 
-    const effectiveScore = computeEffectiveScore(rep.mu, rep.sigma);
-    const tier = resolveTier(effectiveScore);
+        const effectiveScore = computeEffectiveScore(rep.mu, rep.sigma);
+        const tier = resolveTier(effectiveScore);
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          agentId, principalId, scope,
-          mu: rep.mu, sigma: rep.sigma,
-          effectiveScore,
-          tier: { name: tier.name, level: tier.tier, origin: tier.origin },
-          autonomyLevel: tier.autonomyLevel,
-          maxSpend: tier.maxSpendPerAction,
-          maxDelegationDepth: tier.maxDelegationDepth,
-          receiptCount: rep.receiptCount,
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "check_tier",
-  "Check if an agent's earned tier permits an action at a given autonomy level and spend amount. Returns null if permitted, or escalation details if tier is insufficient.",
-  {
-    agentId: z.string().describe("Agent ID"),
-    principalId: z.string().describe("Principal ID"),
-    scope: z.string().describe("Reputation scope"),
-    requestedAutonomy: z.number().optional().describe("Requested autonomy level (1-5)"),
-    requestedSpend: z.number().optional().describe("Requested spend amount in dollars"),
-    requestedDepth: z.number().optional().describe("Requested delegation depth"),
-  },
-  async ({ agentId, principalId, scope, requestedAutonomy, requestedSpend, requestedDepth }) => {
-    const key = `${principalId}:${agentId}:${scope}`;
-    let rep = state.reputations.get(key);
-
-    if (!rep) {
-      rep = createScopedReputation(principalId, agentId, scope);
-      state.reputations.set(key, rep);
-    }
-
-    const effectiveScore = computeEffectiveScore(rep.mu, rep.sigma);
-    const tier = resolveTier(effectiveScore);
-    const ctx: TierCheckContext = { agentTier: tier, effectiveScore };
-
-    const escalation = checkTierForIntent({
-      tierContext: ctx,
-      requestedAutonomy: requestedAutonomy as any,
-      requestedSpend,
-      requestedDepth,
-    });
-
-    // Also get advisory warnings
-    const warnings = advisoryTierPrecheck({
-      tierContext: ctx,
-      requestedAutonomy: requestedAutonomy as any,
-      requestedSpend,
-    });
-
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          permitted: escalation === null,
-          currentTier: tier.name,
-          effectiveScore,
-          escalation,
-          warnings,
-        }, null, 2),
-      }],
-    };
-  }
-);
-
-server.tool(
-  "review_promotion",
-  "Create a signed promotion review for another agent. Reviewer must have 'earned' origin and tier above target. Returns signed review artifact.",
-  {
-    agentId: z.string().describe("Agent being reviewed for promotion"),
-    principalId: z.string().describe("Principal who delegated to the agent"),
-    scope: z.string().describe("Scope of the promotion"),
-    toTier: z.number().describe("Target tier level (0-4)"),
-    verdict: z.enum(['promoted', 'denied']).describe("Promotion verdict"),
-    reasoning: z.string().describe("Explanation for the verdict"),
-    probationDays: z.number().optional().describe("Probation period in days (default: 7)"),
-  },
-  async ({ agentId, principalId, scope, toTier, verdict, reasoning, probationDays }) => {
-    if (!state.privateKey || !state.agentId) {
-      return { content: [{ type: "text" as const, text: 'Identity required. Call identify or set AGENT_KEY first.' }], isError: true };
-    }
-
-    // Get target agent's current reputation
-    const key = `${principalId}:${agentId}:${scope}`;
-    let rep = state.reputations.get(key);
-    if (!rep) {
-      rep = createScopedReputation(principalId, agentId, scope);
-      state.reputations.set(key, rep);
-    }
-
-    const effectiveScore = computeEffectiveScore(rep.mu, rep.sigma);
-    const currentTier = resolveTier(effectiveScore);
-
-    // Get reviewer's tier (from their own reputation in same scope)
-    const reviewerKey = `${principalId}:${state.agentId}:${scope}`;
-    let reviewerRep = state.reputations.get(reviewerKey);
-    if (!reviewerRep) {
-      reviewerRep = createScopedReputation(principalId, state.agentId!, scope);
-      state.reputations.set(reviewerKey, reviewerRep);
-    }
-    const reviewerScore = computeEffectiveScore(reviewerRep.mu, reviewerRep.sigma);
-    const reviewerTier = resolveTier(reviewerScore);
-
-    // Build evidence portfolio from receipt count (simplified — real impl would aggregate from task history)
-    const evidence: EvidencePortfolio = {
-      scope,
-      totalReceipts: rep.receiptCount,
-      classCounts: { trivial: 0, standard: rep.receiptCount, complex: 0, critical: 0 },
-      distinctReviewers: 1,
-      distinctTaskTypes: 1,
-      failureRate: 0,
-      interventionRate: 0,
-    };
-
-    try {
-      const review = createPromotionReview({
-        agentId, principalId, scope,
-        fromTier: currentTier.tier,
-        toTier,
-        reviewerId: state.agentId!,
-        reviewerTier: reviewerTier.tier,
-        reviewerOrigin: reviewerTier.origin,
-        evidence,
-        effectiveScore,
-        verdict,
-        reasoning,
-        reviewerPrivateKey: state.privateKey,
-        probationDays,
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              agentId, principalId, scope,
+              mu: rep.mu, sigma: rep.sigma,
+              effectiveScore,
+              tier: { name: tier.name, level: tier.tier, origin: tier.origin },
+              autonomyLevel: tier.autonomyLevel,
+              maxSpend: tier.maxSpendPerAction,
+              maxDelegationDepth: tier.maxDelegationDepth,
+              receiptCount: rep.receiptCount,
+            }, null, 2),
+          }],
+        };
       });
 
-      state.promotionHistory.push({ review, appliedAt: new Date().toISOString() });
+server.registerTool("check_tier", { description: "Check if an agent's earned tier permits an action at a given autonomy level and spend amount. Returns null if permitted, or escalation details if tier is insufficient.", inputSchema: z.object({
+        agentId: z.string().describe("Agent ID"),
+        principalId: z.string().describe("Principal ID"),
+        scope: z.string().describe("Reputation scope"),
+        requestedAutonomy: z.number().optional().describe("Requested autonomy level (1-5)"),
+        requestedSpend: z.number().optional().describe("Requested spend amount in dollars"),
+        requestedDepth: z.number().optional().describe("Requested delegation depth"),
+      }) }, async ({ agentId, principalId, scope, requestedAutonomy, requestedSpend, requestedDepth }) => {
+        const key = `${principalId}:${agentId}:${scope}`;
+        let rep = state.reputations.get(key);
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify(review, null, 2),
-        }],
-      };
-    } catch (err: any) {
-      return { content: [{ type: "text" as const, text: safeError("Promotion review failed", err) }], isError: true };
-    }
-  }
-);
+        if (!rep) {
+          rep = createScopedReputation(principalId, agentId, scope);
+          state.reputations.set(key, rep);
+        }
 
-server.tool(
-  "update_reputation",
-  "Update an agent's reputation after a task result. Success increases mu and decreases sigma; failure does the opposite. Higher evidence class = larger effect.",
-  {
-    agentId: z.string().describe("Agent whose reputation to update"),
-    principalId: z.string().describe("Principal ID"),
-    scope: z.string().describe("Reputation scope"),
-    success: z.boolean().describe("Whether the task succeeded"),
-    evidenceClass: z.enum(['trivial', 'standard', 'complex', 'critical']).describe("Complexity of the task"),
-  },
-  async ({ agentId, principalId, scope, success, evidenceClass }) => {
-    const key = `${principalId}:${agentId}:${scope}`;
-    let rep = state.reputations.get(key);
+        const effectiveScore = computeEffectiveScore(rep.mu, rep.sigma);
+        const tier = resolveTier(effectiveScore);
+        const ctx: TierCheckContext = { agentTier: tier, effectiveScore };
 
-    if (!rep) {
-      rep = createScopedReputation(principalId, agentId, scope);
-    }
+        const escalation = checkTierForIntent({
+          tierContext: ctx,
+          requestedAutonomy: requestedAutonomy as any,
+          requestedSpend,
+          requestedDepth,
+        });
 
-    const updated = updateReputationFromResult(rep, success, evidenceClass as any);
-    state.reputations.set(key, updated);
+        // Also get advisory warnings
+        const warnings = advisoryTierPrecheck({
+          tierContext: ctx,
+          requestedAutonomy: requestedAutonomy as any,
+          requestedSpend,
+        });
 
-    const effectiveScore = computeEffectiveScore(updated.mu, updated.sigma);
-    const tier = resolveTier(effectiveScore);
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              permitted: escalation === null,
+              currentTier: tier.name,
+              effectiveScore,
+              escalation,
+              warnings,
+            }, null, 2),
+          }],
+        };
+      });
 
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          agentId, scope,
-          mu: updated.mu, sigma: updated.sigma,
-          effectiveScore,
-          tier: tier.name,
-          receiptCount: updated.receiptCount,
-          result: success ? 'success' : 'failure',
-          evidenceClass,
-        }, null, 2),
-      }],
-    };
-  }
-);
+server.registerTool("review_promotion", { description: "Create a signed promotion review for another agent. Reviewer must have 'earned' origin and tier above target. Returns signed review artifact.", inputSchema: z.object({
+        agentId: z.string().describe("Agent being reviewed for promotion"),
+        principalId: z.string().describe("Principal who delegated to the agent"),
+        scope: z.string().describe("Scope of the promotion"),
+        toTier: z.number().describe("Target tier level (0-4)"),
+        verdict: z.enum(['promoted', 'denied']).describe("Promotion verdict"),
+        reasoning: z.string().describe("Explanation for the verdict"),
+        probationDays: z.number().optional().describe("Probation period in days (default: 7)"),
+      }) }, async ({ agentId, principalId, scope, toTier, verdict, reasoning, probationDays }) => {
+        if (!state.privateKey || !state.agentId) {
+          return { content: [{ type: "text" as const, text: 'Identity required. Call identify or set AGENT_KEY first.' }], isError: true };
+        }
 
-server.tool(
-  "get_promotion_history",
-  "Get the promotion review history for this session.",
-  {},
-  async () => {
-    return {
-      content: [{
-        type: "text" as const,
-        text: JSON.stringify({
-          count: state.promotionHistory.length,
-          reviews: state.promotionHistory,
-        }, null, 2),
-      }],
-    };
-  }
-);
+        // Get target agent's current reputation
+        const key = `${principalId}:${agentId}:${scope}`;
+        let rep = state.reputations.get(key);
+        if (!rep) {
+          rep = createScopedReputation(principalId, agentId, scope);
+          state.reputations.set(key, rep);
+        }
+
+        const effectiveScore = computeEffectiveScore(rep.mu, rep.sigma);
+        const currentTier = resolveTier(effectiveScore);
+
+        // Get reviewer's tier (from their own reputation in same scope)
+        const reviewerKey = `${principalId}:${state.agentId}:${scope}`;
+        let reviewerRep = state.reputations.get(reviewerKey);
+        if (!reviewerRep) {
+          reviewerRep = createScopedReputation(principalId, state.agentId!, scope);
+          state.reputations.set(reviewerKey, reviewerRep);
+        }
+        const reviewerScore = computeEffectiveScore(reviewerRep.mu, reviewerRep.sigma);
+        const reviewerTier = resolveTier(reviewerScore);
+
+        // Build evidence portfolio from receipt count (simplified — real impl would aggregate from task history)
+        const evidence: EvidencePortfolio = {
+          scope,
+          totalReceipts: rep.receiptCount,
+          classCounts: { trivial: 0, standard: rep.receiptCount, complex: 0, critical: 0 },
+          distinctReviewers: 1,
+          distinctTaskTypes: 1,
+          failureRate: 0,
+          interventionRate: 0,
+        };
+
+        try {
+          const review = createPromotionReview({
+            agentId, principalId, scope,
+            fromTier: currentTier.tier,
+            toTier,
+            reviewerId: state.agentId!,
+            reviewerTier: reviewerTier.tier,
+            reviewerOrigin: reviewerTier.origin,
+            evidence,
+            effectiveScore,
+            verdict,
+            reasoning,
+            reviewerPrivateKey: state.privateKey,
+            probationDays,
+          });
+
+          state.promotionHistory.push({ review, appliedAt: new Date().toISOString() });
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify(review, null, 2),
+            }],
+          };
+        } catch (err: any) {
+          return { content: [{ type: "text" as const, text: safeError("Promotion review failed", err) }], isError: true };
+        }
+      });
+
+server.registerTool("update_reputation", { description: "Update an agent's reputation after a task result. Success increases mu and decreases sigma; failure does the opposite. Higher evidence class = larger effect.", inputSchema: z.object({
+        agentId: z.string().describe("Agent whose reputation to update"),
+        principalId: z.string().describe("Principal ID"),
+        scope: z.string().describe("Reputation scope"),
+        success: z.boolean().describe("Whether the task succeeded"),
+        evidenceClass: z.enum(['trivial', 'standard', 'complex', 'critical']).describe("Complexity of the task"),
+      }) }, async ({ agentId, principalId, scope, success, evidenceClass }) => {
+        const key = `${principalId}:${agentId}:${scope}`;
+        let rep = state.reputations.get(key);
+
+        if (!rep) {
+          rep = createScopedReputation(principalId, agentId, scope);
+        }
+
+        const updated = updateReputationFromResult(rep, success, evidenceClass as any);
+        state.reputations.set(key, updated);
+
+        const effectiveScore = computeEffectiveScore(updated.mu, updated.sigma);
+        const tier = resolveTier(effectiveScore);
+
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              agentId, scope,
+              mu: updated.mu, sigma: updated.sigma,
+              effectiveScore,
+              tier: tier.name,
+              receiptCount: updated.receiptCount,
+              result: success ? 'success' : 'failure',
+              evidenceClass,
+            }, null, 2),
+          }],
+        };
+      });
+
+server.registerTool("get_promotion_history", { description: "Get the promotion review history for this session.", inputSchema: z.object({}) }, async () => {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              count: state.promotionHistory.length,
+              reviews: state.promotionHistory,
+            }, null, 2),
+          }],
+        };
+      });
 
 // ═══════════════════════════════════════
 // Proxy Gateway (moved to gateway product in v3.0.0)
@@ -3517,51 +3241,31 @@ server.tool(
 // remain in the SDK — rebuild a gateway locally from those, or use the
 // hosted gateway at gateway.aeoess.com.
 
-server.tool(
-  "create_gateway",
-  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Create a ProxyGateway enforcement boundary.",
-  {
-    gatewayId: z.string().optional().describe("Custom gateway ID"),
-    approvalTTLSeconds: z.number().optional().describe("Two-phase approval timeout"),
-    maxPendingPerAgent: z.number().optional().describe("Max pending approvals per agent"),
-  },
-  async (_args) => movedToGateway("create_gateway")
-);
+server.registerTool("create_gateway", { description: "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Create a ProxyGateway enforcement boundary.", inputSchema: z.object({
+        gatewayId: z.string().optional().describe("Custom gateway ID"),
+        approvalTTLSeconds: z.number().optional().describe("Two-phase approval timeout"),
+        maxPendingPerAgent: z.number().optional().describe("Max pending approvals per agent"),
+      }) }, async (_args) => movedToGateway("create_gateway"));
 
-server.tool(
-  "gateway_process_tool_call",
-  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Process a tool call through the gateway enforcement boundary.",
-  {
-    agentId: z.string(),
-    tool: z.string(),
-    params: z.record(z.unknown()).optional(),
-    scopeRequired: z.string(),
-    spendAmount: z.number().optional(),
-    spendCurrency: z.string().optional(),
-    context: z.string().optional(),
-  },
-  async (_args) => movedToGateway("gateway_process_tool_call")
-);
+server.registerTool("gateway_process_tool_call", { description: "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Process a tool call through the gateway enforcement boundary.", inputSchema: z.object({
+        agentId: z.string(),
+        tool: z.string(),
+        params: z.record(z.string(), z.unknown()).optional(),
+        scopeRequired: z.string(),
+        spendAmount: z.number().optional(),
+        spendCurrency: z.string().optional(),
+        context: z.string().optional(),
+      }) }, async (_args) => movedToGateway("gateway_process_tool_call"));
 
-server.tool(
-  "gateway_approve",
-  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Two-phase execution: approve a tool call without executing it.",
-  {
-    agentId: z.string(),
-    tool: z.string(),
-    params: z.record(z.unknown()).optional(),
-    scopeRequired: z.string(),
-    context: z.string().optional(),
-  },
-  async (_args) => movedToGateway("gateway_approve")
-);
+server.registerTool("gateway_approve", { description: "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Two-phase execution: approve a tool call without executing it.", inputSchema: z.object({
+        agentId: z.string(),
+        tool: z.string(),
+        params: z.record(z.string(), z.unknown()).optional(),
+        scopeRequired: z.string(),
+        context: z.string().optional(),
+      }) }, async (_args) => movedToGateway("gateway_approve"));
 
-server.tool(
-  "gateway_stats",
-  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Get gateway statistics.",
-  {},
-  async (_args) => movedToGateway("gateway_stats")
-);
+server.registerTool("gateway_stats", { description: "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Get gateway statistics.", inputSchema: z.object({}) }, async (_args) => movedToGateway("gateway_stats"));
 
 // ═══════════════════════════════════════
 // Intent Network (Agent-Mediated Matching)
@@ -3582,461 +3286,401 @@ async function intentApiFetch(path: string, opts?: RequestInit): Promise<any> {
 // signing glue. Cards are still publishable directly via the Intent Network
 // REST API at api.aeoess.com/api/cards — sign with your agent private key.
 
-server.tool(
-  "search_matches",
-  "Search the Intent Network for people relevant to you. Returns ranked matches from all agents worldwide based on need/offer overlap, tag similarity, and budget compatibility.",
-  {
-    min_score: z.number().optional().describe("Minimum relevance score 0-1 (default: 0.1)"),
-    max_results: z.number().optional().describe("Maximum results to return (default: 10)"),
-    category_filter: z.string().optional().describe("Only match within this category"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+server.registerTool("search_matches", { description: "Search the Intent Network for people relevant to you. Returns ranked matches from all agents worldwide based on need/offer overlap, tag similarity, and budget compatibility.", inputSchema: z.object({
+        min_score: z.number().optional().describe("Minimum relevance score 0-1 (default: 0.1)"),
+        max_results: z.number().optional().describe("Maximum results to return (default: 10)"),
+        category_filter: z.string().optional().describe("Only match within this category"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-    const agentId = state.agentId || 'anonymous';
-    try {
-      const params = new URLSearchParams();
-      if (args.min_score) params.set('minScore', String(args.min_score));
-      if (args.max_results) params.set('max', String(args.max_results));
-      const result = await intentApiFetch(`/api/matches/${agentId}?${params}`);
+        const agentId = state.agentId || 'anonymous';
+        try {
+          const params = new URLSearchParams();
+          if (args.min_score) params.set('minScore', String(args.min_score));
+          if (args.max_results) params.set('max', String(args.max_results));
+          const result = await intentApiFetch(`/api/matches/${agentId}?${params}`);
 
-      if (result.error) {
-        return { content: [{ type: "text" as const, text: result.error }], isError: true };
-      }
+          if (result.error) {
+            return { content: [{ type: "text" as const, text: result.error }], isError: true };
+          }
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            matchCount: result.matchCount,
-            totalCandidates: result.totalCandidates,
-            matches: (result.matches || []).map((m: any) => ({
-              matchId: m.matchId,
-              otherAgent: m.agentA === agentId ? m.agentB : m.agentA,
-              score: m.score,
-              mutual: m.mutual,
-              explanation: m.explanation,
-              needOfferMatches: (m.needOfferMatches || []).map((nom: any) => ({
-                needCategory: nom.need?.category,
-                offerCategory: nom.offer?.category,
-                matchType: nom.matchType,
-              })),
-            })),
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "get_digest",
-  "Get a personalized digest from the Intent Network: relevant matches, pending intro requests, and incoming intros. The killer feature — 'what matters to me right now?'",
-  {},
-  async () => {
-    const agentId = state.agentId || 'anonymous';
-    try {
-      const digest = await intentApiFetch(`/api/digest/${agentId}`);
-
-      if (digest.error) {
-        return { content: [{ type: "text" as const, text: digest.error }], isError: true };
-      }
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            agentId: digest.agentId,
-            generatedAt: digest.generatedAt,
-            summary: digest.summary,
-            hasCard: digest.hasCard,
-            networkSize: digest.networkSize,
-            matchCount: (digest.matches || []).length,
-            topMatches: (digest.matches || []).slice(0, 5).map((m: any) => ({
-              otherAgent: m.agentA === agentId ? m.agentB : m.agentA,
-              score: m.score,
-              explanation: m.explanation,
-            })),
-            introsPending: (digest.introsPending || []).length,
-            introsReceived: (digest.introsReceived || []).length,
-            introsReceivedDetail: (digest.introsReceived || []).map((intro: any) => ({
-              introId: intro.introId,
-              fromAgent: intro.requestedBy,
-              message: intro.message,
-              status: intro.status,
-            })),
-            note: !digest.hasCard ? 'No card published yet. POST to api.aeoess.com/api/cards to join the network (publish_intent_card tool removed in v3.0.0).' : undefined,
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "request_intro",
-  "Request an introduction to another agent's human based on a match. Both sides must approve before real information crosses.",
-  {
-    match_id: z.string().describe("Match ID from search_matches"),
-    target_card_id: z.string().describe("Card ID of the agent you want an intro to"),
-    message: z.string().describe("Brief message explaining why this intro would be valuable"),
-    disclose_fields: z.array(z.string()).optional().describe("Fields you're willing to share (e.g. ['needs', 'offers', 'openTo'])"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-
-    try {
-      const result = await intentApiFetch('/api/intros', {
-        method: 'POST',
-        body: JSON.stringify({
-          matchId: args.match_id,
-          targetAgentId: args.target_card_id,
-          message: args.message,
-          fieldsToDisclose: args.disclose_fields || ['needs', 'offers'],
-          agentId: state.agentId,
-          publicKey: state.agentKey,
-          signature: state.privateKey ? sign(args.match_id + args.message, state.privateKey) : '',
-        }),
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                matchCount: result.matchCount,
+                totalCandidates: result.totalCandidates,
+                matches: (result.matches || []).map((m: any) => ({
+                  matchId: m.matchId,
+                  otherAgent: m.agentA === agentId ? m.agentB : m.agentA,
+                  score: m.score,
+                  mutual: m.mutual,
+                  explanation: m.explanation,
+                  needOfferMatches: (m.needOfferMatches || []).map((nom: any) => ({
+                    needCategory: nom.need?.category,
+                    offerCategory: nom.offer?.category,
+                    matchType: nom.matchType,
+                  })),
+                })),
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
+        }
       });
 
-      if (result.error) {
-        return { content: [{ type: "text" as const, text: `Intro request failed: ${result.error}` }], isError: true };
-      }
+server.registerTool("get_digest", { description: "Get a personalized digest from the Intent Network: relevant matches, pending intro requests, and incoming intros. The killer feature — 'what matters to me right now?'", inputSchema: z.object({}) }, async () => {
+        const agentId = state.agentId || 'anonymous';
+        try {
+          const digest = await intentApiFetch(`/api/digest/${agentId}`);
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            introId: result.introId,
-            status: result.status,
-            targetAgent: result.targetAgentId,
-            note: 'Intro request sent via Intent Network. The other agent\'s human will see this in their digest.',
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Intro request failed", e) }], isError: true };
-    }
-  }
-);
+          if (digest.error) {
+            return { content: [{ type: "text" as const, text: digest.error }], isError: true };
+          }
 
-server.tool(
-  "respond_to_intro",
-  "Respond to an introduction request. Approve to share your disclosed information, or decline.",
-  {
-    intro_id: z.string().describe("Intro request ID"),
-    approved: z.boolean().describe("Whether to approve the introduction"),
-    message: z.string().optional().describe("Optional response message"),
-    disclose_fields: z.array(z.string()).optional().describe("Fields you're willing to share back"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-
-    try {
-      const result = await intentApiFetch(`/api/intros/${args.intro_id}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-          verdict: args.approved ? 'approve' : 'decline',
-          message: args.message,
-          disclosedFields: args.disclose_fields ? Object.fromEntries(args.disclose_fields.map(f => [f, 'disclosed'])) : undefined,
-          agentId: state.agentId,
-          publicKey: state.agentKey,
-          signature: state.privateKey ? sign(args.intro_id + (args.approved ? 'approve' : 'decline'), state.privateKey) : '',
-        }),
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                agentId: digest.agentId,
+                generatedAt: digest.generatedAt,
+                summary: digest.summary,
+                hasCard: digest.hasCard,
+                networkSize: digest.networkSize,
+                matchCount: (digest.matches || []).length,
+                topMatches: (digest.matches || []).slice(0, 5).map((m: any) => ({
+                  otherAgent: m.agentA === agentId ? m.agentB : m.agentA,
+                  score: m.score,
+                  explanation: m.explanation,
+                })),
+                introsPending: (digest.introsPending || []).length,
+                introsReceived: (digest.introsReceived || []).length,
+                introsReceivedDetail: (digest.introsReceived || []).map((intro: any) => ({
+                  introId: intro.introId,
+                  fromAgent: intro.requestedBy,
+                  message: intro.message,
+                  status: intro.status,
+                })),
+                note: !digest.hasCard ? 'No card published yet. POST to api.aeoess.com/api/cards to join the network (publish_intent_card tool removed in v3.0.0).' : undefined,
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
+        }
       });
 
-      if (result.error) {
-        return { content: [{ type: "text" as const, text: `Intro response failed: ${result.error}` }], isError: true };
-      }
+server.registerTool("request_intro", { description: "Request an introduction to another agent's human based on a match. Both sides must approve before real information crosses.", inputSchema: z.object({
+        match_id: z.string().describe("Match ID from search_matches"),
+        target_card_id: z.string().describe("Card ID of the agent you want an intro to"),
+        message: z.string().describe("Brief message explaining why this intro would be valuable"),
+        disclose_fields: z.array(z.string()).optional().describe("Fields you're willing to share (e.g. ['needs', 'offers', 'openTo'])"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            introId: result.introId,
-            status: result.status,
-            approved: args.approved,
-            note: args.approved
-              ? 'Introduction approved. Both parties can now see disclosed information.'
-              : 'Introduction declined.',
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Intro response failed", e) }], isError: true };
-    }
-  }
-);
+        try {
+          const result = await intentApiFetch('/api/intros', {
+            method: 'POST',
+            body: JSON.stringify({
+              matchId: args.match_id,
+              targetAgentId: args.target_card_id,
+              message: args.message,
+              fieldsToDisclose: args.disclose_fields || ['needs', 'offers'],
+              agentId: state.agentId,
+              publicKey: state.agentKey,
+              signature: state.privateKey ? sign(args.match_id + args.message, state.privateKey) : '',
+            }),
+          });
 
-server.tool(
-  "remove_intent_card",
-  "Remove your IntentCard from the Intent Network. Use when your needs or offers have changed.",
-  {
-    card_id: z.string().describe("Card ID to remove"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+          if (result.error) {
+            return { content: [{ type: "text" as const, text: `Intro request failed: ${result.error}` }], isError: true };
+          }
 
-    try {
-      const result = await intentApiFetch(`/api/cards/${args.card_id}`, {
-        method: 'DELETE',
-        body: JSON.stringify({
-          agentId: state.agentId,
-          publicKey: state.agentKey,
-          signature: state.privateKey ? sign(args.card_id, state.privateKey) : '',
-        }),
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                introId: result.introId,
+                status: result.status,
+                targetAgent: result.targetAgentId,
+                note: 'Intro request sent via Intent Network. The other agent\'s human will see this in their digest.',
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Intro request failed", e) }], isError: true };
+        }
       });
 
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            removed: result.removed || false,
-            cardId: args.card_id,
-            error: result.error,
-          }, null, 2),
-        }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
-    }
-  }
-);
+server.registerTool("respond_to_intro", { description: "Respond to an introduction request. Approve to share your disclosed information, or decline.", inputSchema: z.object({
+        intro_id: z.string().describe("Intro request ID"),
+        approved: z.boolean().describe("Whether to approve the introduction"),
+        message: z.string().optional().describe("Optional response message"),
+        disclose_fields: z.array(z.string()).optional().describe("Fields you're willing to share back"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+        try {
+          const result = await intentApiFetch(`/api/intros/${args.intro_id}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              verdict: args.approved ? 'approve' : 'decline',
+              message: args.message,
+              disclosedFields: args.disclose_fields ? Object.fromEntries(args.disclose_fields.map(f => [f, 'disclosed'])) : undefined,
+              agentId: state.agentId,
+              publicKey: state.agentKey,
+              signature: state.privateKey ? sign(args.intro_id + (args.approved ? 'approve' : 'decline'), state.privateKey) : '',
+            }),
+          });
+
+          if (result.error) {
+            return { content: [{ type: "text" as const, text: `Intro response failed: ${result.error}` }], isError: true };
+          }
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                introId: result.introId,
+                status: result.status,
+                approved: args.approved,
+                note: args.approved
+                  ? 'Introduction approved. Both parties can now see disclosed information.'
+                  : 'Introduction declined.',
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Intro response failed", e) }], isError: true };
+        }
+      });
+
+server.registerTool("remove_intent_card", { description: "Remove your IntentCard from the Intent Network. Use when your needs or offers have changed.", inputSchema: z.object({
+        card_id: z.string().describe("Card ID to remove"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+
+        try {
+          const result = await intentApiFetch(`/api/cards/${args.card_id}`, {
+            method: 'DELETE',
+            body: JSON.stringify({
+              agentId: state.agentId,
+              publicKey: state.agentKey,
+              signature: state.privateKey ? sign(args.card_id, state.privateKey) : '',
+            }),
+          });
+
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                removed: result.removed || false,
+                cardId: args.card_id,
+                error: result.error,
+              }, null, 2),
+            }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("API error", e) }], isError: true };
+        }
+      });
 
 // ═══════════════════════════════════════
 // v2: Constitutional Governance Tools
 // ═══════════════════════════════════════
 
-server.tool(
-  "create_policy_context",
-  "Create a v2 PolicyContext with mandatory sunset. Every v2 object requires one.",
-  {
-    policy_version: z.string().default("2.0.0"),
-    values_floor_version: z.string().default("1.0.0"),
-    trust_epoch: z.number().default(1),
-    valid_until: z.string().describe("ISO 8601 expiration (mandatory, max 180 days)"),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const ctx = createPolicyContext({
-        policy_version: args.policy_version,
-        values_floor_version: args.values_floor_version,
-        trust_epoch: args.trust_epoch,
-        issuer_id: state.agentKey!,
-        valid_until: args.valid_until,
+server.registerTool("create_policy_context", { description: "Create a v2 PolicyContext with mandatory sunset. Every v2 object requires one.", inputSchema: z.object({
+        policy_version: z.string().default("2.0.0"),
+        values_floor_version: z.string().default("1.0.0"),
+        trust_epoch: z.number().default(1),
+        valid_until: z.string().describe("ISO 8601 expiration (mandatory, max 180 days)"),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        try {
+          const ctx = createPolicyContext({
+            policy_version: args.policy_version,
+            values_floor_version: args.values_floor_version,
+            trust_epoch: args.trust_epoch,
+            issuer_id: state.agentKey!,
+            valid_until: args.valid_until,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(ctx, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("PolicyContext creation failed", e) }], isError: true };
+        }
       });
-      return { content: [{ type: "text" as const, text: JSON.stringify(ctx, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("PolicyContext creation failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "create_v2_delegation",
-  "Create a v2 delegation with versioning, mandatory sunset, and PolicyContext binding.",
-  {
-    delegatee: z.string().describe("Public key of the agent receiving authority"),
-    scope_categories: z.array(z.string()).describe("Action categories (e.g., ['analysis', 'communication'])"),
-    valid_until: z.string().describe("ISO 8601 expiration"),
-    trust_epoch: z.number().default(1),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const ctx = createPolicyContext({
-        policy_version: "2.0.0", values_floor_version: "1.0.0",
-        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
-        valid_until: args.valid_until,
+server.registerTool("create_v2_delegation", { description: "Create a v2 delegation with versioning, mandatory sunset, and PolicyContext binding.", inputSchema: z.object({
+        delegatee: z.string().describe("Public key of the agent receiving authority"),
+        scope_categories: z.array(z.string()).describe("Action categories (e.g., ['analysis', 'communication'])"),
+        valid_until: z.string().describe("ISO 8601 expiration"),
+        trust_epoch: z.number().default(1),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        try {
+          const ctx = createPolicyContext({
+            policy_version: "2.0.0", values_floor_version: "1.0.0",
+            trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+            valid_until: args.valid_until,
+          });
+          const del = createV2Delegation({
+            delegator: state.agentKey!, delegatee: args.delegatee,
+            scope: { action_categories: args.scope_categories },
+            policy_context: ctx, delegator_private_key: state.privateKey!,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(del, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("v2 delegation failed", e) }], isError: true };
+        }
       });
-      const del = createV2Delegation({
-        delegator: state.agentKey!, delegatee: args.delegatee,
-        scope: { action_categories: args.scope_categories },
-        policy_context: ctx, delegator_private_key: state.privateKey!,
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify(del, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("v2 delegation failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "supersede_v2_delegation",
-  "Supersede a v2 delegation. Scope narrowing needs justification. Scope expansion also needs independent reviewer.",
-  {
-    original_delegation_id: z.string(),
-    new_scope_categories: z.array(z.string()),
-    justification: z.string(),
-    valid_until: z.string(),
-    trust_epoch: z.number().default(1),
-    expansion_reviewer: z.string().optional().describe("Required if scope expands"),
-    expansion_reviewer_private_key: z.string().optional(),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const ctx = createPolicyContext({
-        policy_version: "2.0.0", values_floor_version: "1.0.0",
-        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
-        valid_until: args.valid_until,
+server.registerTool("supersede_v2_delegation", { description: "Supersede a v2 delegation. Scope narrowing needs justification. Scope expansion also needs independent reviewer.", inputSchema: z.object({
+        original_delegation_id: z.string(),
+        new_scope_categories: z.array(z.string()),
+        justification: z.string(),
+        valid_until: z.string(),
+        trust_epoch: z.number().default(1),
+        expansion_reviewer: z.string().optional().describe("Required if scope expands"),
+        expansion_reviewer_private_key: z.string().optional(),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        try {
+          const ctx = createPolicyContext({
+            policy_version: "2.0.0", values_floor_version: "1.0.0",
+            trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+            valid_until: args.valid_until,
+          });
+          const del = supersedeV2Delegation({
+            original_delegation_id: args.original_delegation_id,
+            new_scope: { action_categories: args.new_scope_categories },
+            justification: args.justification,
+            policy_context: ctx, delegator_private_key: state.privateKey!,
+            expansion_reviewer: args.expansion_reviewer,
+            expansion_reviewer_private_key: args.expansion_reviewer_private_key,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(del, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Supersession failed", e) }], isError: true };
+        }
       });
-      const del = supersedeV2Delegation({
-        original_delegation_id: args.original_delegation_id,
-        new_scope: { action_categories: args.new_scope_categories },
-        justification: args.justification,
-        policy_context: ctx, delegator_private_key: state.privateKey!,
-        expansion_reviewer: args.expansion_reviewer,
-        expansion_reviewer_private_key: args.expansion_reviewer_private_key,
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify(del, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Supersession failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "create_outcome_record",
-  "Register an action outcome (agent perspective). Part of three-way reporting.",
-  {
-    action_id: z.string(), declared_intent: z.string(),
-    semantic_uncertainty: z.enum(["low", "medium", "high", "critical"]),
-    observed_outcome: z.string(),
-    outcome_class: z.enum(["success", "partial_success", "failure", "unintended_effect", "unknown"]),
-    divergence_score: z.number().min(0).max(1),
-    valid_until: z.string(),
-    trust_epoch: z.number().default(1),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const ctx = createPolicyContext({
-        policy_version: "2.0.0", values_floor_version: "1.0.0",
-        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
-        valid_until: args.valid_until,
+server.registerTool("create_outcome_record", { description: "Register an action outcome (agent perspective). Part of three-way reporting.", inputSchema: z.object({
+        action_id: z.string(), declared_intent: z.string(),
+        semantic_uncertainty: z.enum(["low", "medium", "high", "critical"]),
+        observed_outcome: z.string(),
+        outcome_class: z.enum(["success", "partial_success", "failure", "unintended_effect", "unknown"]),
+        divergence_score: z.number().min(0).max(1),
+        valid_until: z.string(),
+        trust_epoch: z.number().default(1),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        try {
+          const ctx = createPolicyContext({
+            policy_version: "2.0.0", values_floor_version: "1.0.0",
+            trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+            valid_until: args.valid_until,
+          });
+          const record = createV2OutcomeRecord({
+            action_id: args.action_id, agent_id: state.agentKey!,
+            declared_intent: args.declared_intent,
+            semantic_uncertainty: args.semantic_uncertainty as any,
+            observed_outcome: args.observed_outcome,
+            outcome_class: args.outcome_class as any,
+            divergence_score: args.divergence_score,
+            agent_private_key: state.privateKey!,
+            policy_context: ctx,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(record, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Outcome registration failed", e) }], isError: true };
+        }
       });
-      const record = createV2OutcomeRecord({
-        action_id: args.action_id, agent_id: state.agentKey!,
-        declared_intent: args.declared_intent,
-        semantic_uncertainty: args.semantic_uncertainty as any,
-        observed_outcome: args.observed_outcome,
-        outcome_class: args.outcome_class as any,
-        divergence_score: args.divergence_score,
-        agent_private_key: state.privateKey!,
-        policy_context: ctx,
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify(record, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Outcome registration failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "add_principal_report",
-  "Add principal's perspective to an outcome record. Enables three-way divergence reporting.",
-  {
-    outcome_id: z.string(), observed_outcome: z.string(),
-    outcome_class: z.enum(["success", "partial_success", "failure", "unintended_effect", "unknown"]),
-    divergence_score: z.number().min(0).max(1),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const record = addV2PrincipalReport({
-        outcome_id: args.outcome_id, principal_id: state.agentKey!,
-        observed_outcome: args.observed_outcome,
-        outcome_class: args.outcome_class as any,
-        divergence_score: args.divergence_score,
-        principal_private_key: state.privateKey!,
+server.registerTool("add_principal_report", { description: "Add principal's perspective to an outcome record. Enables three-way divergence reporting.", inputSchema: z.object({
+        outcome_id: z.string(), observed_outcome: z.string(),
+        outcome_class: z.enum(["success", "partial_success", "failure", "unintended_effect", "unknown"]),
+        divergence_score: z.number().min(0).max(1),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        try {
+          const record = addV2PrincipalReport({
+            outcome_id: args.outcome_id, principal_id: state.agentKey!,
+            observed_outcome: args.observed_outcome,
+            outcome_class: args.outcome_class as any,
+            divergence_score: args.divergence_score,
+            principal_private_key: state.privateKey!,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify({ id: record.id, consensus: record.consensus, effective_divergence: getV2EffectiveDivergence(record) }, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Principal report failed", e) }], isError: true };
+        }
       });
-      return { content: [{ type: "text" as const, text: JSON.stringify({ id: record.id, consensus: record.consensus, effective_divergence: getV2EffectiveDivergence(record) }, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Principal report failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "define_emergency_pathway",
-  "Define a pre-authorized emergency pathway at delegation time. Only the delegator can define these.",
-  {
-    delegation_ref: z.string(), description: z.string(),
-    trigger_field: z.string(), trigger_operator: z.enum(["eq", "neq", "gt", "lt", "gte", "lte"]),
-    trigger_value: z.union([z.string(), z.number(), z.boolean()]),
-    expanded_scope_categories: z.array(z.string()),
-    max_duration: z.string().default("PT1H"),
-    review_deadline: z.string().default("PT24H"),
-    review_authority: z.string(),
-    valid_until: z.string(), trust_epoch: z.number().default(1),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const ctx = createPolicyContext({
-        policy_version: "2.0.0", values_floor_version: "1.0.0",
-        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
-        valid_until: args.valid_until,
+server.registerTool("define_emergency_pathway", { description: "Define a pre-authorized emergency pathway at delegation time. Only the delegator can define these.", inputSchema: z.object({
+        delegation_ref: z.string(), description: z.string(),
+        trigger_field: z.string(), trigger_operator: z.enum(["eq", "neq", "gt", "lt", "gte", "lte"]),
+        trigger_value: z.union([z.string(), z.number(), z.boolean()]),
+        expanded_scope_categories: z.array(z.string()),
+        max_duration: z.string().default("PT1H"),
+        review_deadline: z.string().default("PT24H"),
+        review_authority: z.string(),
+        valid_until: z.string(), trust_epoch: z.number().default(1),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        try {
+          const ctx = createPolicyContext({
+            policy_version: "2.0.0", values_floor_version: "1.0.0",
+            trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+            valid_until: args.valid_until,
+          });
+          const pw = defineV2EmergencyPathway({
+            delegation_ref: args.delegation_ref,
+            trigger_conditions: { any_of: [{ field: args.trigger_field, operator: args.trigger_operator, value: args.trigger_value }] },
+            expanded_scope: { action_categories: args.expanded_scope_categories },
+            max_duration: args.max_duration, mandatory_review_deadline: args.review_deadline,
+            review_authority: args.review_authority, description: args.description,
+            policy_context: ctx, delegator_private_key: state.privateKey!,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(pw, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Emergency pathway failed", e) }], isError: true };
+        }
       });
-      const pw = defineV2EmergencyPathway({
-        delegation_ref: args.delegation_ref,
-        trigger_conditions: { any_of: [{ field: args.trigger_field, operator: args.trigger_operator, value: args.trigger_value }] },
-        expanded_scope: { action_categories: args.expanded_scope_categories },
-        max_duration: args.max_duration, mandatory_review_deadline: args.review_deadline,
-        review_authority: args.review_authority, description: args.description,
-        policy_context: ctx, delegator_private_key: state.privateKey!,
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify(pw, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Emergency pathway failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "activate_emergency",
-  "Activate a pre-authorized emergency pathway with evidence.",
-  {
-    pathway_id: z.string(),
-    trigger_evidence: z.string().describe("Evidence that trigger conditions are met"),
-    valid_until: z.string(), trust_epoch: z.number().default(1),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const ctx = createPolicyContext({
-        policy_version: "2.0.0", values_floor_version: "1.0.0",
-        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
-        valid_until: args.valid_until,
+server.registerTool("activate_emergency", { description: "Activate a pre-authorized emergency pathway with evidence.", inputSchema: z.object({
+        pathway_id: z.string(),
+        trigger_evidence: z.string().describe("Evidence that trigger conditions are met"),
+        valid_until: z.string(), trust_epoch: z.number().default(1),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        try {
+          const ctx = createPolicyContext({
+            policy_version: "2.0.0", values_floor_version: "1.0.0",
+            trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+            valid_until: args.valid_until,
+          });
+          const act = activateV2Emergency({
+            pathway_id: args.pathway_id, agent_id: state.agentKey!,
+            trigger_evidence: args.trigger_evidence,
+            agent_private_key: state.privateKey!, policy_context: ctx,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(act, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Emergency activation failed", e) }], isError: true };
+        }
       });
-      const act = activateV2Emergency({
-        pathway_id: args.pathway_id, agent_id: state.agentKey!,
-        trigger_evidence: args.trigger_evidence,
-        agent_private_key: state.privateKey!, policy_context: ctx,
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify(act, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Emergency activation failed", e) }], isError: true };
-    }
-  }
-);
 
 // create_attestation (contextual attestation lifecycle) removed in v3.0.0:
 // createV2Attestation / getV2AgentAttestationQualityAvg / clearV2AttestationStore
@@ -4046,41 +3690,36 @@ server.tool(
 // request_migration removed in v3.0.0: requestV2Migration / approveV2Migration /
 // executeV2Migration were gateway-side migration orchestration.
 
-server.tool(
-  "create_artifact_provenance",
-  "Tag an agent-generated artifact with provenance metadata (content hash, risk class, authoring agent).",
-  {
-    delegation_ref: z.string(), intended_use: z.string(),
-    risk_class: z.enum(["low", "medium", "high", "critical"]),
-    requires_human_execution: z.boolean().default(false),
-    content: z.string().describe("The artifact content (used for hash, not stored)"),
-    artifact_type: z.string().describe("e.g. email_draft, code_script, database_query"),
-    valid_until: z.string(), trust_epoch: z.number().default(1),
-  },
-  async (args) => {
-    const keyErr = requireKey();
-    if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
-    try {
-      const ctx = createPolicyContext({
-        policy_version: "2.0.0", values_floor_version: "1.0.0",
-        trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
-        valid_until: args.valid_until,
+server.registerTool("create_artifact_provenance", { description: "Tag an agent-generated artifact with provenance metadata (content hash, risk class, authoring agent).", inputSchema: z.object({
+        delegation_ref: z.string(), intended_use: z.string(),
+        risk_class: z.enum(["low", "medium", "high", "critical"]),
+        requires_human_execution: z.boolean().default(false),
+        content: z.string().describe("The artifact content (used for hash, not stored)"),
+        artifact_type: z.string().describe("e.g. email_draft, code_script, database_query"),
+        valid_until: z.string(), trust_epoch: z.number().default(1),
+      }) }, async (args) => {
+        const keyErr = requireKey();
+        if (keyErr) return { content: [{ type: "text" as const, text: keyErr }], isError: true };
+        try {
+          const ctx = createPolicyContext({
+            policy_version: "2.0.0", values_floor_version: "1.0.0",
+            trust_epoch: args.trust_epoch, issuer_id: state.agentKey!,
+            valid_until: args.valid_until,
+          });
+          const prov = createArtifactProvenance({
+            authoring_agent: state.agentKey!,
+            authority_scope: { action_categories: ["*"] },
+            delegation_ref: args.delegation_ref, intended_use: args.intended_use,
+            risk_class: args.risk_class as any,
+            requires_human_execution: args.requires_human_execution,
+            content: args.content, artifact_type: args.artifact_type,
+            policy_context: ctx, agent_private_key: state.privateKey!,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(prov, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("Provenance failed", e) }], isError: true };
+        }
       });
-      const prov = createArtifactProvenance({
-        authoring_agent: state.agentKey!,
-        authority_scope: { action_categories: ["*"] },
-        delegation_ref: args.delegation_ref, intended_use: args.intended_use,
-        risk_class: args.risk_class as any,
-        requires_human_execution: args.requires_human_execution,
-        content: args.content, artifact_type: args.artifact_type,
-        policy_context: ctx, agent_private_key: state.privateKey!,
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify(prov, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("Provenance failed", e) }], isError: true };
-    }
-  }
-);
 
 // check_anomaly removed in v3.0.0: anomaly detection is a cross-session
 // product capability (recordV2Action / checkV2FirstMaxAuthority /
@@ -4091,84 +3730,64 @@ server.tool(
 // Data Governance Tools (Modules 36A, 38, 39)
 // ═══════════════════════════════════════
 
-server.tool(
-  "register_data_source",
-  "Register a data source with terms for agent access. Returns a signed SourceReceipt.",
-  {
-    contentDescriptor: z.string().describe("Human-readable description of the data"),
-    contentCommitment: z.string().describe("SHA-256 hash of the data content"),
-    contentType: z.enum(["document", "structured_data", "media", "user_input", "model_context"]).describe("Type of data"),
-    allowedPurposes: z.array(z.string()).describe("Allowed purposes: read, analyze, summarize, generate, recommend, train, embed, redistribute, commercial"),
-    requireAttribution: z.boolean().default(true),
-    compensationType: z.enum(["none", "attribution_only", "per_access", "negotiate"]).default("none"),
-    compensationAmount: z.number().optional().describe("Amount per access (for per_access type)"),
-    compensationCurrency: z.string().default("usd"),
-    maxAccessCount: z.number().optional().describe("Max total accesses allowed"),
-    derivativePolicy: z.enum(["unrestricted", "same_terms", "attribution_required", "no_derivatives"]).default("attribution_required"),
-  },
-  async (p) => {
-    if (!state.agentKey || !state.privateKey) return { content: [{ type: "text", text: "❌ Not identified. Call identify first." }] };
-    const comp = p.compensationType === 'per_access'
-      ? { type: 'per_access' as const, amount: p.compensationAmount || 0.01, currency: p.compensationCurrency }
-      : p.compensationType === 'attribution_only' ? { type: 'attribution_only' as const }
-      : p.compensationType === 'negotiate' ? { type: 'negotiate' as const, contact: state.agentId || '' }
-      : { type: 'none' as const };
-    const terms: DataTerms = {
-      allowedPurposes: p.allowedPurposes as any[],
-      requireAttribution: p.requireAttribution,
-      requireNotification: false,
-      compensation: comp,
-      derivativePolicy: p.derivativePolicy,
-      auditVisibility: 'source_and_principal',
-      revocable: false,
-      maxAccessCount: p.maxAccessCount,
-    };
-    const receipt = registerSelfAttestedSource({
-      ownerPrincipalId: state.principal?.principalId || state.agentId || 'unknown',
-      ownerPublicKey: state.agentKey,
-      ownerPrivateKey: state.privateKey,
-      contentCommitment: p.contentCommitment,
-      contentType: p.contentType,
-      contentDescriptor: p.contentDescriptor,
-      dataTerms: terms,
-    });
-    state.sourceReceipts.set(receipt.sourceReceiptId, receipt);
-    return { content: [{ type: "text", text: `✅ Data source registered.\n\nSource Receipt ID: ${receipt.sourceReceiptId}\nDescriptor: ${p.contentDescriptor}\nAllowed purposes: ${p.allowedPurposes.join(', ')}\nCompensation: ${p.compensationType}${p.compensationAmount ? ' $' + p.compensationAmount : ''}\nMax accesses: ${p.maxAccessCount || 'unlimited'}\nDerivative policy: ${p.derivativePolicy}` }] };
-  }
-);
+server.registerTool("register_data_source", { description: "Register a data source with terms for agent access. Returns a signed SourceReceipt.", inputSchema: z.object({
+        contentDescriptor: z.string().describe("Human-readable description of the data"),
+        contentCommitment: z.string().describe("SHA-256 hash of the data content"),
+        contentType: z.enum(["document", "structured_data", "media", "user_input", "model_context"]).describe("Type of data"),
+        allowedPurposes: z.array(z.string()).describe("Allowed purposes: read, analyze, summarize, generate, recommend, train, embed, redistribute, commercial"),
+        requireAttribution: z.boolean().default(true),
+        compensationType: z.enum(["none", "attribution_only", "per_access", "negotiate"]).default("none"),
+        compensationAmount: z.number().optional().describe("Amount per access (for per_access type)"),
+        compensationCurrency: z.string().default("usd"),
+        maxAccessCount: z.number().optional().describe("Max total accesses allowed"),
+        derivativePolicy: z.enum(["unrestricted", "same_terms", "attribution_required", "no_derivatives"]).default("attribution_required"),
+      }) }, async (p) => {
+        if (!state.agentKey || !state.privateKey) return { content: [{ type: "text", text: "❌ Not identified. Call identify first." }] };
+        const comp = p.compensationType === 'per_access'
+          ? { type: 'per_access' as const, amount: p.compensationAmount || 0.01, currency: p.compensationCurrency }
+          : p.compensationType === 'attribution_only' ? { type: 'attribution_only' as const }
+          : p.compensationType === 'negotiate' ? { type: 'negotiate' as const, contact: state.agentId || '' }
+          : { type: 'none' as const };
+        const terms: DataTerms = {
+          allowedPurposes: p.allowedPurposes as any[],
+          requireAttribution: p.requireAttribution,
+          requireNotification: false,
+          compensation: comp,
+          derivativePolicy: p.derivativePolicy,
+          auditVisibility: 'source_and_principal',
+          revocable: false,
+          maxAccessCount: p.maxAccessCount,
+        };
+        const receipt = registerSelfAttestedSource({
+          ownerPrincipalId: state.principal?.principalId || state.agentId || 'unknown',
+          ownerPublicKey: state.agentKey,
+          ownerPrivateKey: state.privateKey,
+          contentCommitment: p.contentCommitment,
+          contentType: p.contentType,
+          contentDescriptor: p.contentDescriptor,
+          dataTerms: terms,
+        });
+        state.sourceReceipts.set(receipt.sourceReceiptId, receipt);
+        return { content: [{ type: "text", text: `✅ Data source registered.\n\nSource Receipt ID: ${receipt.sourceReceiptId}\nDescriptor: ${p.contentDescriptor}\nAllowed purposes: ${p.allowedPurposes.join(', ')}\nCompensation: ${p.compensationType}${p.compensationAmount ? ' $' + p.compensationAmount : ''}\nMax accesses: ${p.maxAccessCount || 'unlimited'}\nDerivative policy: ${p.derivativePolicy}` }] };
+      });
 
-server.tool(
-  "create_data_enforcement_gate",
-  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Create a data enforcement gate that checks terms before allowing data access.",
-  {
-    mode: z.enum(["enforce", "audit", "off"]).default("enforce").describe("Enforcement mode"),
-  },
-  async (_args) => movedToGateway("create_data_enforcement_gate")
-);
+server.registerTool("create_data_enforcement_gate", { description: "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Create a data enforcement gate that checks terms before allowing data access.", inputSchema: z.object({
+        mode: z.enum(["enforce", "audit", "off"]).default("enforce").describe("Enforcement mode"),
+      }) }, async (_args) => movedToGateway("create_data_enforcement_gate"));
 
-server.tool(
-  "query_contributions",
-  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Query the data contribution ledger.",
-  {
-    sourceReceiptId: z.string().optional(),
-    agentId: z.string().optional(),
-    principalId: z.string().optional(),
-    purpose: z.string().optional(),
-    minAccessCount: z.number().optional(),
-  },
-  async (_args) => movedToGateway("query_contributions")
-);
+server.registerTool("query_contributions", { description: "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Query the data contribution ledger.", inputSchema: z.object({
+        sourceReceiptId: z.string().optional(),
+        agentId: z.string().optional(),
+        principalId: z.string().optional(),
+        purpose: z.string().optional(),
+        minAccessCount: z.number().optional(),
+      }) }, async (_args) => movedToGateway("query_contributions"));
 
-server.tool(
-  "generate_settlement",
-  "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Generate a Merkle-committed, signed settlement record for a period.",
-  {
-    startDate: z.string().describe("Period start (YYYY-MM-DD)"),
-    endDate: z.string().describe("Period end (YYYY-MM-DD)"),
-    periodLabel: z.string().describe("Label (e.g. '2026-Q1', '2026-03')"),
-  },
-  async (_args) => movedToGateway("generate_settlement")
-);
+server.registerTool("generate_settlement", { description: "[deprecated in v3.0.0 — use gateway.aeoess.com REST API] Generate a Merkle-committed, signed settlement record for a period.", inputSchema: z.object({
+        startDate: z.string().describe("Period start (YYYY-MM-DD)"),
+        endDate: z.string().describe("Period end (YYYY-MM-DD)"),
+        periodLabel: z.string().describe("Label (e.g. '2026-Q1', '2026-03')"),
+      }) }, async (_args) => movedToGateway("generate_settlement"));
 
 // Removed in v3.0.0 (moved to gateway product — no stub to keep tool count bounded):
 //   check_data_access         (DataEnforcementGate.checkAccess)
@@ -4188,930 +3807,715 @@ server.tool(
 // Data Lifecycle Governance Tools
 // ═══════════════════════════════════════
 
-server.tool(
-  "create_derivation_receipt",
-  "Create a signed derivation receipt tracking how data was transformed. Multi-hop lineage with break markers.",
-  {
-    derivativeId: z.string().describe("Unique ID for the derivative artifact"),
-    derivativeType: z.string().describe("Type: rag_chunk, embedding, summary, model_weights, synthetic_derivative, etc."),
-    parentArtifacts: z.array(z.object({
-      artifactId: z.string(),
-      artifactType: z.string(),
-      sourceId: z.string().optional(),
-      transformFromParent: z.string().optional(),
-    })).describe("Parent artifacts this was derived from"),
-    transformClass: z.string().describe("Transform type: copy, subset, summary, embedding, aggregation, synthetic, model_training"),
-    lineageConfidence: z.enum(["complete", "partial", "asserted", "inferred", "broken_external", "unverifiable"]),
-    externalBoundaryBreak: z.boolean().optional().describe("True if data left the system and returned"),
-    breakReason: z.string().optional(),
-    isSyntheticDerivative: z.boolean().optional(),
-    upstreamObligationsRetained: z.boolean().optional(),
-  },
-  async (p) => {
-    const receipt = createDerivationReceipt({
-      ...p,
-      agentId: state.agentId || 'unknown',
-      privateKey: state.privateKey!,
-    });
-    state.derivationStore.set(receipt.derivativeId, receipt);
-    return { content: [{ type: "text", text: `✅ Derivation receipt created.\n\nID: ${receipt.receiptId}\nDerivative: ${receipt.derivativeId}\nType: ${receipt.derivativeType}\nTransform: ${receipt.transformClass}\nConfidence: ${receipt.lineageConfidence}\nBoundary break: ${receipt.externalBoundaryBreak}\nSynthetic: ${receipt.isSyntheticDerivative || false}\nParents: ${receipt.parentArtifacts.length}` }] };
-  }
-);
+server.registerTool("create_derivation_receipt", { description: "Create a signed derivation receipt tracking how data was transformed. Multi-hop lineage with break markers.", inputSchema: z.object({
+        derivativeId: z.string().describe("Unique ID for the derivative artifact"),
+        derivativeType: z.string().describe("Type: rag_chunk, embedding, summary, model_weights, synthetic_derivative, etc."),
+        parentArtifacts: z.array(z.object({
+          artifactId: z.string(),
+          artifactType: z.string(),
+          sourceId: z.string().optional(),
+          transformFromParent: z.string().optional(),
+        })).describe("Parent artifacts this was derived from"),
+        transformClass: z.string().describe("Transform type: copy, subset, summary, embedding, aggregation, synthetic, model_training"),
+        lineageConfidence: z.enum(["complete", "partial", "asserted", "inferred", "broken_external", "unverifiable"]),
+        externalBoundaryBreak: z.boolean().optional().describe("True if data left the system and returned"),
+        breakReason: z.string().optional(),
+        isSyntheticDerivative: z.boolean().optional(),
+        upstreamObligationsRetained: z.boolean().optional(),
+      }) }, async (p) => {
+        const receipt = createDerivationReceipt({
+          ...p,
+          agentId: state.agentId || 'unknown',
+          privateKey: state.privateKey!,
+        });
+        state.derivationStore.set(receipt.derivativeId, receipt);
+        return { content: [{ type: "text", text: `✅ Derivation receipt created.\n\nID: ${receipt.receiptId}\nDerivative: ${receipt.derivativeId}\nType: ${receipt.derivativeType}\nTransform: ${receipt.transformClass}\nConfidence: ${receipt.lineageConfidence}\nBoundary break: ${receipt.externalBoundaryBreak}\nSynthetic: ${receipt.isSyntheticDerivative || false}\nParents: ${receipt.parentArtifacts.length}` }] };
+      });
 
-server.tool(
-  "resolve_lineage",
-  "Resolve the full derivation chain for an artifact. Multi-hop with cycle detection.",
-  {
-    derivativeId: z.string().describe("ID of the derivative to trace"),
-    maxDepth: z.number().optional().describe("Max chain depth (default: 10)"),
-  },
-  async (p) => {
-    const result = resolveExtendedLineage(p.derivativeId, state.derivationStore, p.maxDepth);
-    const chainStr = result.chain.map((r, i) => `  ${i+1}. ${r.derivativeId} (${r.transformClass}, ${r.lineageConfidence})`).join('\n');
-    return { content: [{ type: "text", text: `🔗 Lineage for: ${p.derivativeId}\n\nDepth: ${result.depth}\nConfidence: ${result.confidence}\nHas breaks: ${result.hasBreaks}\n\nChain:\n${chainStr || '  (empty)'}` }] };
-  }
-);
+server.registerTool("resolve_lineage", { description: "Resolve the full derivation chain for an artifact. Multi-hop with cycle detection.", inputSchema: z.object({
+        derivativeId: z.string().describe("ID of the derivative to trace"),
+        maxDepth: z.number().optional().describe("Max chain depth (default: 10)"),
+      }) }, async (p) => {
+        const result = resolveExtendedLineage(p.derivativeId, state.derivationStore, p.maxDepth);
+        const chainStr = result.chain.map((r, i) => `  ${i+1}. ${r.derivativeId} (${r.transformClass}, ${r.lineageConfidence})`).join('\n');
+        return { content: [{ type: "text", text: `🔗 Lineage for: ${p.derivativeId}\n\nDepth: ${result.depth}\nConfidence: ${result.confidence}\nHas breaks: ${result.hasBreaks}\n\nChain:\n${chainStr || '  (empty)'}` }] };
+      });
 
-server.tool(
-  "evaluate_revocation_impact",
-  "Evaluate what happens when a data source revokes consent. Propagates obligations through derivation chains.",
-  {
-    sourceId: z.string().describe("Source ID that is revoking consent"),
-  },
-  async (p) => {
-    const result = evaluateRevocationImpact({
-      sourceId: p.sourceId,
-      receiptStore: state.derivationStore,
-      privateKey: state.privateKey!,
-    });
-    const lines = result.affectedArtifacts.map(a =>
-      `  • ${a.artifactId} (${a.artifactType}): ${a.obligation} — ${a.reason}`
-    );
-    return { content: [{ type: "text", text: `⚠️ Revocation Impact: ${p.sourceId}\n\nObligation ID: ${result.obligationId}\nTotal affected: ${result.totalAffected}\n\nAffected artifacts:\n${lines.join('\n') || '  (none)'}` }] };
-  }
-);
+server.registerTool("evaluate_revocation_impact", { description: "Evaluate what happens when a data source revokes consent. Propagates obligations through derivation chains.", inputSchema: z.object({
+        sourceId: z.string().describe("Source ID that is revoking consent"),
+      }) }, async (p) => {
+        const result = evaluateRevocationImpact({
+          sourceId: p.sourceId,
+          receiptStore: state.derivationStore,
+          privateKey: state.privateKey!,
+        });
+        const lines = result.affectedArtifacts.map(a =>
+          `  • ${a.artifactId} (${a.artifactType}): ${a.obligation} — ${a.reason}`
+        );
+        return { content: [{ type: "text", text: `⚠️ Revocation Impact: ${p.sourceId}\n\nObligation ID: ${result.obligationId}\nTotal affected: ${result.totalAffected}\n\nAffected artifacts:\n${lines.join('\n') || '  (none)'}` }] };
+      });
 
-server.tool(
-  "create_decision_lineage_receipt",
-  "Create a Decision Lineage Receipt — traces which data sources influenced a decision. Right-to-explanation primitive.",
-  {
-    decisionArtifactId: z.string(),
-    decisionType: z.string().describe("E.g. loan_approval, content_moderation, risk_assessment"),
-    contributingSources: z.array(z.object({
-      sourceId: z.string(),
-      accessReceiptId: z.string(),
-      derivationDepth: z.number(),
-      transformPath: z.array(z.string()),
-      termsVersionAtAccess: z.string(),
-      lineageConfidence: z.enum(["complete", "partial", "asserted", "inferred", "broken_external", "unverifiable"]),
-      compensationStatus: z.enum(["settled", "pending", "disputed", "revoked"]),
-    })),
-    lineageCompleteness: z.enum(["complete", "partial", "asserted", "broken_external"]),
-    transformChain: z.array(z.string()).optional(),
-    governingPurpose: z.string().optional(),
-    explanation: z.string().optional(),
-  },
-  async (p) => {
-    const receipt = createDecisionLineageReceipt({
-      ...p,
-      privateKey: state.privateKey!,
-    });
-    return { content: [{ type: "text", text: `✅ Decision Lineage Receipt created.\n\nID: ${receipt.receiptId}\nDecision: ${receipt.decisionArtifactId}\nType: ${p.decisionType}\nSources: ${receipt.contributingSources.length}\nCompleteness: ${receipt.lineageCompleteness}\nPurpose: ${receipt.governingPurpose || 'N/A'}\nExplanation: ${receipt.explanation || 'N/A'}` }] };
-  }
-);
+server.registerTool("create_decision_lineage_receipt", { description: "Create a Decision Lineage Receipt — traces which data sources influenced a decision. Right-to-explanation primitive.", inputSchema: z.object({
+        decisionArtifactId: z.string(),
+        decisionType: z.string().describe("E.g. loan_approval, content_moderation, risk_assessment"),
+        contributingSources: z.array(z.object({
+          sourceId: z.string(),
+          accessReceiptId: z.string(),
+          derivationDepth: z.number(),
+          transformPath: z.array(z.string()),
+          termsVersionAtAccess: z.string(),
+          lineageConfidence: z.enum(["complete", "partial", "asserted", "inferred", "broken_external", "unverifiable"]),
+          compensationStatus: z.enum(["settled", "pending", "disputed", "revoked"]),
+        })),
+        lineageCompleteness: z.enum(["complete", "partial", "asserted", "broken_external"]),
+        transformChain: z.array(z.string()).optional(),
+        governingPurpose: z.string().optional(),
+        explanation: z.string().optional(),
+      }) }, async (p) => {
+        const receipt = createDecisionLineageReceipt({
+          ...p,
+          privateKey: state.privateKey!,
+        });
+        return { content: [{ type: "text", text: `✅ Decision Lineage Receipt created.\n\nID: ${receipt.receiptId}\nDecision: ${receipt.decisionArtifactId}\nType: ${p.decisionType}\nSources: ${receipt.contributingSources.length}\nCompleteness: ${receipt.lineageCompleteness}\nPurpose: ${receipt.governingPurpose || 'N/A'}\nExplanation: ${receipt.explanation || 'N/A'}` }] };
+      });
 
-server.tool(
-  "check_purpose_permitted",
-  "Check if a purpose is permitted under source terms. Supports wildcards (research:*) and hierarchical matching.",
-  {
-    purpose: z.string().describe("Purpose to check (e.g. research:academic, training:model)"),
-    allowedPurposes: z.array(z.string()).describe("Purposes allowed by the source terms"),
-  },
-  async (p) => {
-    const permitted = isPurposePermitted(p.purpose, p.allowedPurposes);
-    const category = purposeCategory(p.purpose);
-    return { content: [{ type: "text", text: `${permitted ? '✅' : '❌'} Purpose "${p.purpose}" (category: ${category}) is ${permitted ? 'PERMITTED' : 'NOT PERMITTED'}\n\nAllowed: [${p.allowedPurposes.join(', ')}]` }] };
-  }
-);
+server.registerTool("check_purpose_permitted", { description: "Check if a purpose is permitted under source terms. Supports wildcards (research:*) and hierarchical matching.", inputSchema: z.object({
+        purpose: z.string().describe("Purpose to check (e.g. research:academic, training:model)"),
+        allowedPurposes: z.array(z.string()).describe("Purposes allowed by the source terms"),
+      }) }, async (p) => {
+        const permitted = isPurposePermitted(p.purpose, p.allowedPurposes);
+        const category = purposeCategory(p.purpose);
+        return { content: [{ type: "text", text: `${permitted ? '✅' : '❌'} Purpose "${p.purpose}" (category: ${category}) is ${permitted ? 'PERMITTED' : 'NOT PERMITTED'}\n\nAllowed: [${p.allowedPurposes.join(', ')}]` }] };
+      });
 
-server.tool(
-  "check_retention_expired",
-  "Check if data retention has expired based on TTL policy.",
-  {
-    accessedAt: z.string().describe("ISO timestamp of when data was accessed"),
-    maxRetentionMs: z.number().nullable().describe("Max retention in ms (null = no limit)"),
-    accessType: z.enum(["ephemeral", "persistent"]).optional(),
-  },
-  async (p) => {
-    const policy: RetentionPolicy = { maxRetentionMs: p.maxRetentionMs, onExpiry: 'delete' };
-    const expired = isRetentionExpired(p.accessedAt, policy, p.accessType);
-    return { content: [{ type: "text", text: `${expired ? '⚠️ EXPIRED' : '✅ VALID'} — Retention check for access at ${p.accessedAt}\n\nMax retention: ${p.maxRetentionMs ? `${p.maxRetentionMs / 3600000}h` : 'unlimited'}\nAccess type: ${p.accessType || 'default'}` }] };
-  }
-);
+server.registerTool("check_retention_expired", { description: "Check if data retention has expired based on TTL policy.", inputSchema: z.object({
+        accessedAt: z.string().describe("ISO timestamp of when data was accessed"),
+        maxRetentionMs: z.number().nullable().describe("Max retention in ms (null = no limit)"),
+        accessType: z.enum(["ephemeral", "persistent"]).optional(),
+      }) }, async (p) => {
+        const policy: RetentionPolicy = { maxRetentionMs: p.maxRetentionMs, onExpiry: 'delete' };
+        const expired = isRetentionExpired(p.accessedAt, policy, p.accessType);
+        return { content: [{ type: "text", text: `${expired ? '⚠️ EXPIRED' : '✅ VALID'} — Retention check for access at ${p.accessedAt}\n\nMax retention: ${p.maxRetentionMs ? `${p.maxRetentionMs / 3600000}h` : 'unlimited'}\nAccess type: ${p.accessType || 'default'}` }] };
+      });
 
-server.tool(
-  "check_aggregate_constraints",
-  "Check if a data access would violate aggregate rate limits.",
-  {
-    maxAccessesPerWindow: z.number().optional(),
-    windowMs: z.number().optional(),
-    burstLimit: z.number().optional(),
-    currentAccessCount: z.number(),
-    currentRecordCount: z.number(),
-    windowStartMs: z.number(),
-    lastAccessMs: z.number(),
-    sourceId: z.string(),
-    agentId: z.string(),
-  },
-  async (p) => {
-    const constraint: AggregateConstraint = {
-      maxAccessesPerWindow: p.maxAccessesPerWindow,
-      windowMs: p.windowMs,
-      burstLimit: p.burstLimit,
-    };
-    const log: AggregateAccessLog = {
-      sourceId: p.sourceId, agentId: p.agentId,
-      windowStartMs: p.windowStartMs,
-      accessCount: p.currentAccessCount,
-      recordCount: p.currentRecordCount,
-      lastAccessMs: p.lastAccessMs,
-    };
-    const result = checkAggregateConstraints(constraint, log);
-    return { content: [{ type: "text", text: `${result.permitted ? '✅ PERMITTED' : '❌ BLOCKED'} — Aggregate check\n\n${result.reason || 'Within limits'}` }] };
-  }
-);
+server.registerTool("check_aggregate_constraints", { description: "Check if a data access would violate aggregate rate limits.", inputSchema: z.object({
+        maxAccessesPerWindow: z.number().optional(),
+        windowMs: z.number().optional(),
+        burstLimit: z.number().optional(),
+        currentAccessCount: z.number(),
+        currentRecordCount: z.number(),
+        windowStartMs: z.number(),
+        lastAccessMs: z.number(),
+        sourceId: z.string(),
+        agentId: z.string(),
+      }) }, async (p) => {
+        const constraint: AggregateConstraint = {
+          maxAccessesPerWindow: p.maxAccessesPerWindow,
+          windowMs: p.windowMs,
+          burstLimit: p.burstLimit,
+        };
+        const log: AggregateAccessLog = {
+          sourceId: p.sourceId, agentId: p.agentId,
+          windowStartMs: p.windowStartMs,
+          accessCount: p.currentAccessCount,
+          recordCount: p.currentRecordCount,
+          lastAccessMs: p.lastAccessMs,
+        };
+        const result = checkAggregateConstraints(constraint, log);
+        return { content: [{ type: "text", text: `${result.permitted ? '✅ PERMITTED' : '❌ BLOCKED'} — Aggregate check\n\n${result.reason || 'Within limits'}` }] };
+      });
 
-server.tool(
-  "check_jurisdiction_transfer",
-  "Check if a data transfer is permitted under jurisdiction constraints (EU_ONLY, GDPR_ADEQUATE_ONLY, NO_CROSS_BORDER).",
-  {
-    sourceJurisdiction: z.string().describe("ISO 3166-1 alpha-2 code"),
-    targetJurisdiction: z.string().describe("ISO 3166-1 alpha-2 code"),
-    processingRestrictions: z.array(z.string()).optional(),
-    transferConstraints: z.array(z.string()).optional(),
-    purpose: z.string(),
-  },
-  async (p) => {
-    const envelope: JurisdictionEnvelope = {
-      sourceJurisdiction: p.sourceJurisdiction,
-      processingRestrictions: p.processingRestrictions,
-      transferConstraints: p.transferConstraints,
-    };
-    const result = isTransferPermitted(envelope, p.targetJurisdiction, p.purpose);
-    return { content: [{ type: "text", text: `${result.permitted ? '✅ PERMITTED' : '❌ BLOCKED'} — Transfer ${p.sourceJurisdiction} → ${p.targetJurisdiction}\n\n${result.reason || 'No restrictions apply'}` }] };
-  }
-);
+server.registerTool("check_jurisdiction_transfer", { description: "Check if a data transfer is permitted under jurisdiction constraints (EU_ONLY, GDPR_ADEQUATE_ONLY, NO_CROSS_BORDER).", inputSchema: z.object({
+        sourceJurisdiction: z.string().describe("ISO 3166-1 alpha-2 code"),
+        targetJurisdiction: z.string().describe("ISO 3166-1 alpha-2 code"),
+        processingRestrictions: z.array(z.string()).optional(),
+        transferConstraints: z.array(z.string()).optional(),
+        purpose: z.string(),
+      }) }, async (p) => {
+        const envelope: JurisdictionEnvelope = {
+          sourceJurisdiction: p.sourceJurisdiction,
+          processingRestrictions: p.processingRestrictions,
+          transferConstraints: p.transferConstraints,
+        };
+        const result = isTransferPermitted(envelope, p.targetJurisdiction, p.purpose);
+        return { content: [{ type: "text", text: `${result.permitted ? '✅ PERMITTED' : '❌ BLOCKED'} — Transfer ${p.sourceJurisdiction} → ${p.targetJurisdiction}\n\n${result.reason || 'No restrictions apply'}` }] };
+      });
 
-server.tool(
-  "compute_governance_taint",
-  "Compute governance taint level for an artifact based on its derivation chain and revoked sources.",
-  {
-    artifactId: z.string(),
-    revokedSources: z.array(z.string()).optional().describe("Source IDs that have been revoked"),
-  },
-  async (p) => {
-    const revokedSet = new Set(p.revokedSources || []);
-    const taint = computeGovernanceTaint(p.artifactId, state.derivationStore, revokedSet);
-    return { content: [{ type: "text", text: `🏷️ Governance Taint: ${p.artifactId}\n\nLevel: ${taint.taintLevel}\nSources: [${taint.sources.join(', ')}]\nReason: ${taint.reason}\nClearable: ${taint.clearable}\n${taint.clearCondition ? `Condition: ${taint.clearCondition}` : ''}` }] };
-  }
-);
+server.registerTool("compute_governance_taint", { description: "Compute governance taint level for an artifact based on its derivation chain and revoked sources.", inputSchema: z.object({
+        artifactId: z.string(),
+        revokedSources: z.array(z.string()).optional().describe("Source IDs that have been revoked"),
+      }) }, async (p) => {
+        const revokedSet = new Set(p.revokedSources || []);
+        const taint = computeGovernanceTaint(p.artifactId, state.derivationStore, revokedSet);
+        return { content: [{ type: "text", text: `🏷️ Governance Taint: ${p.artifactId}\n\nLevel: ${taint.taintLevel}\nSources: [${taint.sources.join(', ')}]\nReason: ${taint.reason}\nClearable: ${taint.clearable}\n${taint.clearCondition ? `Condition: ${taint.clearCondition}` : ''}` }] };
+      });
 
-server.tool(
-  "file_data_dispute",
-  "File a dispute against a data artifact. The protocol records disputes — resolution is external.",
-  {
-    artifactId: z.string(),
-    disputeType: z.enum(["unauthorized_access", "terms_violation", "compensation_dispute", "revocation_dispute", "lineage_dispute"]),
-    filedBy: z.string(),
-    evidence: z.array(z.string()).describe("Evidence artifact IDs"),
-  },
-  async (p) => {
-    const dispute = fileDispute({
-      ...p,
-      privateKey: state.privateKey!,
-    });
-    return { content: [{ type: "text", text: `⚖️ Dispute filed.\n\nID: ${dispute.disputeId}\nType: ${dispute.disputeType}\nStatus: ${dispute.status}\nArtifact: ${dispute.artifactId}\nEvidence: ${dispute.evidence.length} items` }] };
-  }
-);
+server.registerTool("file_data_dispute", { description: "File a dispute against a data artifact. The protocol records disputes — resolution is external.", inputSchema: z.object({
+        artifactId: z.string(),
+        disputeType: z.enum(["unauthorized_access", "terms_violation", "compensation_dispute", "revocation_dispute", "lineage_dispute"]),
+        filedBy: z.string(),
+        evidence: z.array(z.string()).describe("Evidence artifact IDs"),
+      }) }, async (p) => {
+        const dispute = fileDispute({
+          ...p,
+          privateKey: state.privateKey!,
+        });
+        return { content: [{ type: "text", text: `⚖️ Dispute filed.\n\nID: ${dispute.disputeId}\nType: ${dispute.disputeType}\nStatus: ${dispute.status}\nArtifact: ${dispute.artifactId}\nEvidence: ${dispute.evidence.length} items` }] };
+      });
 
-server.tool(
-  "check_combination_permitted",
-  "Check if combining data from two sources is permitted. Prevents prohibited inferences (HIPAA, COPPA, GDPR Art 9).",
-  {
-    forbiddenSourceClasses: z.array(z.string()).optional(),
-    forbiddenSourceIds: z.array(z.string()).optional(),
-    reason: z.string(),
-    regulatoryBasis: z.string().optional(),
-    otherSourceId: z.string(),
-    otherSourceClasses: z.array(z.string()).optional(),
-  },
-  async (p) => {
-    const constraints: CombinationConstraint[] = [{
-      forbiddenSourceClasses: p.forbiddenSourceClasses,
-      forbiddenSourceIds: p.forbiddenSourceIds,
-      reason: p.reason,
-      regulatoryBasis: p.regulatoryBasis,
-    }];
-    const result = checkCombinationPermitted(constraints, p.otherSourceId, p.otherSourceClasses);
-    return { content: [{ type: "text", text: `${result.permitted ? '✅ PERMITTED' : '❌ BLOCKED'} — Combination check\n\n${result.violations.length ? result.violations.join('\n') : 'No violations'}` }] };
-  }
-);
+server.registerTool("check_combination_permitted", { description: "Check if combining data from two sources is permitted. Prevents prohibited inferences (HIPAA, COPPA, GDPR Art 9).", inputSchema: z.object({
+        forbiddenSourceClasses: z.array(z.string()).optional(),
+        forbiddenSourceIds: z.array(z.string()).optional(),
+        reason: z.string(),
+        regulatoryBasis: z.string().optional(),
+        otherSourceId: z.string(),
+        otherSourceClasses: z.array(z.string()).optional(),
+      }) }, async (p) => {
+        const constraints: CombinationConstraint[] = [{
+          forbiddenSourceClasses: p.forbiddenSourceClasses,
+          forbiddenSourceIds: p.forbiddenSourceIds,
+          reason: p.reason,
+          regulatoryBasis: p.regulatoryBasis,
+        }];
+        const result = checkCombinationPermitted(constraints, p.otherSourceId, p.otherSourceClasses);
+        return { content: [{ type: "text", text: `${result.permitted ? '✅ PERMITTED' : '❌ BLOCKED'} — Combination check\n\n${result.violations.length ? result.violations.join('\n') : 'No violations'}` }] };
+      });
 
-server.tool(
-  "create_access_snapshot",
-  "Create an immutable access snapshot — freezes terms, jurisdiction, and constraints at moment of access. Anti-rug-pull.",
-  {
-    accessReceiptId: z.string(),
-    sourceId: z.string(),
-    termsVersion: z.string(),
-    compensationRate: z.number(),
-    currency: z.string(),
-    allowedPurposes: z.array(z.string()),
-    sourceJurisdiction: z.string().optional(),
-  },
-  async (p) => {
-    const pinnedTerms: TermsVersionPin = {
-      termsVersion: p.termsVersion,
-      pinnedAt: new Date().toISOString(),
-      compensationRate: p.compensationRate,
-      currency: p.currency,
-      allowedPurposes: p.allowedPurposes,
-    };
-    const snap = createAccessSnapshot({
-      accessReceiptId: p.accessReceiptId,
-      sourceId: p.sourceId,
-      pinnedTerms,
-      jurisdiction: p.sourceJurisdiction ? { sourceJurisdiction: p.sourceJurisdiction } : undefined,
-      privateKey: state.privateKey!,
-    });
-    return { content: [{ type: "text", text: `📸 Access snapshot created.\n\nID: ${snap.snapshotId}\nSource: ${snap.sourceId}\nTerms hash: ${snap.termsHash}\nRate: ${snap.pinnedTerms.compensationRate} ${snap.pinnedTerms.currency}\nPurposes: [${snap.pinnedTerms.allowedPurposes.join(', ')}]` }] };
-  }
-);
+server.registerTool("create_access_snapshot", { description: "Create an immutable access snapshot — freezes terms, jurisdiction, and constraints at moment of access. Anti-rug-pull.", inputSchema: z.object({
+        accessReceiptId: z.string(),
+        sourceId: z.string(),
+        termsVersion: z.string(),
+        compensationRate: z.number(),
+        currency: z.string(),
+        allowedPurposes: z.array(z.string()),
+        sourceJurisdiction: z.string().optional(),
+      }) }, async (p) => {
+        const pinnedTerms: TermsVersionPin = {
+          termsVersion: p.termsVersion,
+          pinnedAt: new Date().toISOString(),
+          compensationRate: p.compensationRate,
+          currency: p.currency,
+          allowedPurposes: p.allowedPurposes,
+        };
+        const snap = createAccessSnapshot({
+          accessReceiptId: p.accessReceiptId,
+          sourceId: p.sourceId,
+          pinnedTerms,
+          jurisdiction: p.sourceJurisdiction ? { sourceJurisdiction: p.sourceJurisdiction } : undefined,
+          privateKey: state.privateKey!,
+        });
+        return { content: [{ type: "text", text: `📸 Access snapshot created.\n\nID: ${snap.snapshotId}\nSource: ${snap.sourceId}\nTerms hash: ${snap.termsHash}\nRate: ${snap.pinnedTerms.compensationRate} ${snap.pinnedTerms.currency}\nPurposes: [${snap.pinnedTerms.allowedPurposes.join(', ')}]` }] };
+      });
 
-server.tool(
-  "detect_purpose_drift",
-  "Detect when data purpose drifts through a workflow (e.g. research → commercial).",
-  {
-    originalPurpose: z.string(),
-    currentPurpose: z.string(),
-    intermediateSteps: z.array(z.string()).optional(),
-    allowedPurposes: z.array(z.string()),
-  },
-  async (p) => {
-    const result = detectPurposeDrift(p);
-    return { content: [{ type: "text", text: `${result.severity === 'none' ? '✅' : result.severity === 'violation' ? '❌' : '⚠️'} Purpose Drift: ${result.severity}\n\nOriginal: ${result.originalPurpose}\nCurrent: ${result.currentPurpose}\nDrift: ${result.driftDetected}\nPath: ${result.driftPath.join(' → ')}\n${result.explanation}` }] };
-  }
-);
+server.registerTool("detect_purpose_drift", { description: "Detect when data purpose drifts through a workflow (e.g. research → commercial).", inputSchema: z.object({
+        originalPurpose: z.string(),
+        currentPurpose: z.string(),
+        intermediateSteps: z.array(z.string()).optional(),
+        allowedPurposes: z.array(z.string()),
+      }) }, async (p) => {
+        const result = detectPurposeDrift(p);
+        return { content: [{ type: "text", text: `${result.severity === 'none' ? '✅' : result.severity === 'violation' ? '❌' : '⚠️'} Purpose Drift: ${result.severity}\n\nOriginal: ${result.originalPurpose}\nCurrent: ${result.currentPurpose}\nDrift: ${result.driftDetected}\nPath: ${result.driftPath.join(' → ')}\n${result.explanation}` }] };
+      });
 
-server.tool(
-  "resolve_rights_propagation",
-  "Resolve what rights propagate when data is transformed.",
-  {
-    transformClass: z.string(),
-    sourceDefaultPropagation: z.string().optional().describe("Source-defined default: inherit_full, compensation_only, etc."),
-  },
-  async (p) => {
-    const sourceRule: RightsPropagationRule | undefined = p.sourceDefaultPropagation
-      ? { defaultPropagation: p.sourceDefaultPropagation as any }
-      : undefined;
-    const result = resolveRightsPropagation(p.transformClass, sourceRule);
-    return { content: [{ type: "text", text: `📋 Rights Propagation: ${p.transformClass} → ${result}\n\n${p.sourceDefaultPropagation ? `Source override: ${p.sourceDefaultPropagation}` : `Default: ${DEFAULT_RIGHTS_PROPAGATION[p.transformClass] || 'inherit_partial'}`}` }] };
-  }
-);
+server.registerTool("resolve_rights_propagation", { description: "Resolve what rights propagate when data is transformed.", inputSchema: z.object({
+        transformClass: z.string(),
+        sourceDefaultPropagation: z.string().optional().describe("Source-defined default: inherit_full, compensation_only, etc."),
+      }) }, async (p) => {
+        const sourceRule: RightsPropagationRule | undefined = p.sourceDefaultPropagation
+          ? { defaultPropagation: p.sourceDefaultPropagation as any }
+          : undefined;
+        const result = resolveRightsPropagation(p.transformClass, sourceRule);
+        return { content: [{ type: "text", text: `📋 Rights Propagation: ${p.transformClass} → ${result}\n\n${p.sourceDefaultPropagation ? `Source override: ${p.sourceDefaultPropagation}` : `Default: ${DEFAULT_RIGHTS_PROPAGATION[p.transformClass] || 'inherit_partial'}`}` }] };
+      });
 
-server.tool(
-  "declare_reidentification_risk",
-  "Declare re-identification risk for transformed or synthetic data.",
-  {
-    risk: z.enum(["none_declared", "low", "medium", "high", "unknown", "mitigated"]),
-    assessmentMethod: z.string().optional(),
-    mitigationsApplied: z.array(z.string()).optional(),
-    assessedBy: z.string(),
-  },
-  async (p) => {
-    const decl = declareReidentificationRisk(p);
-    return { content: [{ type: "text", text: `🔒 Re-identification Risk Declaration\n\nRisk: ${decl.risk}\nMethod: ${decl.assessmentMethod || 'N/A'}\nMitigations: ${decl.mitigationsApplied?.join(', ') || 'none'}\nAssessed by: ${decl.assessedBy}\nAt: ${decl.assessedAt}` }] };
-  }
-);
+server.registerTool("declare_reidentification_risk", { description: "Declare re-identification risk for transformed or synthetic data.", inputSchema: z.object({
+        risk: z.enum(["none_declared", "low", "medium", "high", "unknown", "mitigated"]),
+        assessmentMethod: z.string().optional(),
+        mitigationsApplied: z.array(z.string()).optional(),
+        assessedBy: z.string(),
+      }) }, async (p) => {
+        const decl = declareReidentificationRisk(p);
+        return { content: [{ type: "text", text: `🔒 Re-identification Risk Declaration\n\nRisk: ${decl.risk}\nMethod: ${decl.assessmentMethod || 'N/A'}\nMitigations: ${decl.mitigationsApplied?.join(', ') || 'none'}\nAssessed by: ${decl.assessedBy}\nAt: ${decl.assessedAt}` }] };
+      });
 
 // ═══════════════════════════════════════
 // Governance Block (HTML-embedded governance)
 // ═══════════════════════════════════════
 
-server.tool(
-  "generate_governance_block",
-  "Generate a cryptographically signed governance block for embedding in HTML pages. Includes terms, revocation policy, and content hash.",
-  {
-    content: z.string().describe("Article/page content to hash and govern"),
-    publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
-    privateKey: z.string().describe("Publisher's Ed25519 private key (hex)"),
-    inference: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
-    training: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
-    redistribution: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
-    derivative: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
-    caching: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
-    license_url: z.string().optional(),
-    terms_version: z.string().optional(),
-  },
-  async (p) => {
-    const { block, html, meta } = embedGovernance({
-      content: p.content,
-      publicKey: p.publicKey,
-      privateKey: p.privateKey,
-      terms: {
-        inference: p.inference, training: p.training,
-        redistribution: p.redistribution, derivative: p.derivative,
-        caching: p.caching, license_url: p.license_url, version: p.terms_version,
-      },
-    });
-    return { content: [{ type: "text", text: `📋 Governance Block Generated\n\nDID: ${block.source_did}\nContent Hash: ${block.content_hash}\nTerms: inference=${p.inference || 'not set'}, training=${p.training || 'not set'}\n\n--- HTML EMBED (script tag) ---\n${html}\n\n--- META EMBED (base64) ---\n${meta}` }] };
-  }
-);
+server.registerTool("generate_governance_block", { description: "Generate a cryptographically signed governance block for embedding in HTML pages. Includes terms, revocation policy, and content hash.", inputSchema: z.object({
+        content: z.string().describe("Article/page content to hash and govern"),
+        publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
+        privateKey: z.string().describe("Publisher's Ed25519 private key (hex)"),
+        inference: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+        training: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+        redistribution: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+        derivative: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+        caching: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+        license_url: z.string().optional(),
+        terms_version: z.string().optional(),
+      }) }, async (p) => {
+        const { block, html, meta } = embedGovernance({
+          content: p.content,
+          publicKey: p.publicKey,
+          privateKey: p.privateKey,
+          terms: {
+            inference: p.inference, training: p.training,
+            redistribution: p.redistribution, derivative: p.derivative,
+            caching: p.caching, license_url: p.license_url, version: p.terms_version,
+          },
+        });
+        return { content: [{ type: "text", text: `📋 Governance Block Generated\n\nDID: ${block.source_did}\nContent Hash: ${block.content_hash}\nTerms: inference=${p.inference || 'not set'}, training=${p.training || 'not set'}\n\n--- HTML EMBED (script tag) ---\n${html}\n\n--- META EMBED (base64) ---\n${meta}` }] };
+      });
 
-server.tool(
-  "verify_governance_block",
-  "Verify a governance block's signature, content hash, and DID consistency against the original content.",
-  {
-    block: z.string().describe("Governance block JSON string"),
-    content: z.string().describe("Original content to verify against"),
-    publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
-  },
-  async (p) => {
-    const parsed = JSON.parse(p.block);
-    const result = verifyGovernanceBlock(parsed, p.content, p.publicKey);
-    return { content: [{ type: "text", text: `🔍 Governance Block Verification\n\nValid: ${result.valid ? '✅' : '❌'}\nSignature: ${result.signatureValid ? '✅' : '❌'}\nContent Hash: ${result.contentHashValid ? '✅' : '❌'}\nDID Consistent: ${result.didConsistent ? '✅' : '❌'}${result.errors.length > 0 ? '\n\nErrors:\n' + result.errors.join('\n') : ''}` }] };
-  }
-);
+server.registerTool("verify_governance_block", { description: "Verify a governance block's signature, content hash, and DID consistency against the original content.", inputSchema: z.object({
+        block: z.string().describe("Governance block JSON string"),
+        content: z.string().describe("Original content to verify against"),
+        publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
+      }) }, async (p) => {
+        const parsed = JSON.parse(p.block);
+        const result = verifyGovernanceBlock(parsed, p.content, p.publicKey);
+        return { content: [{ type: "text", text: `🔍 Governance Block Verification\n\nValid: ${result.valid ? '✅' : '❌'}\nSignature: ${result.signatureValid ? '✅' : '❌'}\nContent Hash: ${result.contentHashValid ? '✅' : '❌'}\nDID Consistent: ${result.didConsistent ? '✅' : '❌'}${result.errors.length > 0 ? '\n\nErrors:\n' + result.errors.join('\n') : ''}` }] };
+      });
 
-server.tool(
-  "parse_governance_block_html",
-  "Extract a governance block from an HTML page. Looks for APS governance script tags or meta tags.",
-  {
-    html: z.string().describe("HTML content to parse"),
-  },
-  async (p) => {
-    const block = parseGovernanceBlockFromHTML(p.html);
-    if (!block) {
-      return { content: [{ type: "text", text: "No governance block found in HTML." }] };
-    }
-    return { content: [{ type: "text", text: `📋 Governance Block Found\n\nDID: ${block.source_did}\nContent Hash: ${block.content_hash}\nPublished: ${block.published_at}\nTerms: ${JSON.stringify(block.terms, null, 2)}\nRevocation Policy: ${JSON.stringify(block.revocation_policy, null, 2)}` }] };
-  }
-);
+server.registerTool("parse_governance_block_html", { description: "Extract a governance block from an HTML page. Looks for APS governance script tags or meta tags.", inputSchema: z.object({
+        html: z.string().describe("HTML content to parse"),
+      }) }, async (p) => {
+        const block = parseGovernanceBlockFromHTML(p.html);
+        if (!block) {
+          return { content: [{ type: "text", text: "No governance block found in HTML." }] };
+        }
+        return { content: [{ type: "text", text: `📋 Governance Block Found\n\nDID: ${block.source_did}\nContent Hash: ${block.content_hash}\nPublished: ${block.published_at}\nTerms: ${JSON.stringify(block.terms, null, 2)}\nRevocation Policy: ${JSON.stringify(block.revocation_policy, null, 2)}` }] };
+      });
 
-server.tool(
-  "check_usage_permitted",
-  "Check if a specific usage type is permitted under a governance block's terms.",
-  {
-    block: z.string().describe("Governance block JSON string"),
-    usage: z.enum(["inference", "training", "redistribution", "derivative", "caching"]),
-  },
-  async (p) => {
-    const parsed = JSON.parse(p.block);
-    const result = isUsagePermitted(parsed, p.usage);
-    return { content: [{ type: "text", text: `${result.permitted ? '✅' : '❌'} Usage "${p.usage}": ${result.condition}` }] };
-  }
-);
+server.registerTool("check_usage_permitted", { description: "Check if a specific usage type is permitted under a governance block's terms.", inputSchema: z.object({
+        block: z.string().describe("Governance block JSON string"),
+        usage: z.enum(["inference", "training", "redistribution", "derivative", "caching"]),
+      }) }, async (p) => {
+        const parsed = JSON.parse(p.block);
+        const result = isUsagePermitted(parsed, p.usage);
+        return { content: [{ type: "text", text: `${result.permitted ? '✅' : '❌'} Usage "${p.usage}": ${result.condition}` }] };
+      });
 
 // ═══════════════════════════════════════
 // aps.txt + HTTP Headers + Chained Blocks
 // ═══════════════════════════════════════
 
-server.tool(
-  "generate_aps_txt",
-  "Generate a signed aps.txt file for site-wide governance. Like robots.txt but cryptographically signed with terms, revocation endpoint, and MCP upgrade path.",
-  {
-    domain: z.string().describe("Domain this declaration covers (e.g. theagenttimes.com)"),
-    publisherName: z.string().describe("Human-readable publisher name"),
-    publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
-    privateKey: z.string().describe("Publisher's Ed25519 private key (hex)"),
-    inference: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
-    training: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
-    redistribution: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
-    mcpEndpoint: z.string().optional(),
-    revocationEndpoint: z.string().optional(),
-  },
-  async (p) => {
-    const doc = generateApsTxt({
-      domain: p.domain, publisherName: p.publisherName,
-      publicKey: p.publicKey, privateKey: p.privateKey,
-      defaultTerms: { inference: p.inference, training: p.training, redistribution: p.redistribution },
-      mcpEndpoint: p.mcpEndpoint, revocationEndpoint: p.revocationEndpoint,
-    });
-    const serialized = JSON.stringify(doc, null, 2);
-    return { content: [{ type: "text", text: `📄 aps.txt Generated\n\nDomain: ${doc.domain}\nDID: ${doc.publisher_did}\nMCP: ${doc.mcp_endpoint || 'none'}\n\nServe at: ${p.domain}/.well-known/aps.txt\n\n${serialized}` }] };
-  }
-);
+server.registerTool("generate_aps_txt", { description: "Generate a signed aps.txt file for site-wide governance. Like robots.txt but cryptographically signed with terms, revocation endpoint, and MCP upgrade path.", inputSchema: z.object({
+        domain: z.string().describe("Domain this declaration covers (e.g. theagenttimes.com)"),
+        publisherName: z.string().describe("Human-readable publisher name"),
+        publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
+        privateKey: z.string().describe("Publisher's Ed25519 private key (hex)"),
+        inference: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+        training: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+        redistribution: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+        mcpEndpoint: z.string().optional(),
+        revocationEndpoint: z.string().optional(),
+      }) }, async (p) => {
+        const doc = generateApsTxt({
+          domain: p.domain, publisherName: p.publisherName,
+          publicKey: p.publicKey, privateKey: p.privateKey,
+          defaultTerms: { inference: p.inference, training: p.training, redistribution: p.redistribution },
+          mcpEndpoint: p.mcpEndpoint, revocationEndpoint: p.revocationEndpoint,
+        });
+        const serialized = JSON.stringify(doc, null, 2);
+        return { content: [{ type: "text", text: `📄 aps.txt Generated\n\nDomain: ${doc.domain}\nDID: ${doc.publisher_did}\nMCP: ${doc.mcp_endpoint || 'none'}\n\nServe at: ${p.domain}/.well-known/aps.txt\n\n${serialized}` }] };
+      });
 
-server.tool(
-  "verify_aps_txt",
-  "Verify a signed aps.txt file — checks signature and DID consistency.",
-  {
-    content: z.string().describe("aps.txt JSON content"),
-    publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
-  },
-  async (p) => {
-    const doc = JSON.parse(p.content);
-    const result = verifyApsTxt(doc, p.publicKey);
-    return { content: [{ type: "text", text: `${result.valid ? '✅' : '❌'} aps.txt Verification: ${result.valid ? 'VALID' : 'INVALID'}${result.errors.length ? '\nErrors: ' + result.errors.join('; ') : ''}` }] };
-  }
-);
+server.registerTool("verify_aps_txt", { description: "Verify a signed aps.txt file — checks signature and DID consistency.", inputSchema: z.object({
+        content: z.string().describe("aps.txt JSON content"),
+        publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
+      }) }, async (p) => {
+        const doc = JSON.parse(p.content);
+        const result = verifyApsTxt(doc, p.publicKey);
+        return { content: [{ type: "text", text: `${result.valid ? '✅' : '❌'} aps.txt Verification: ${result.valid ? 'VALID' : 'INVALID'}${result.errors.length ? '\nErrors: ' + result.errors.join('; ') : ''}` }] };
+      });
 
-server.tool(
-  "resolve_path_terms",
-  "Resolve governance terms for a specific URL path using aps.txt path overrides.",
-  {
-    apsTxt: z.string().describe("aps.txt JSON content"),
-    path: z.string().describe("URL path to resolve (e.g. /blog/my-article)"),
-  },
-  async (p) => {
-    const doc = JSON.parse(p.apsTxt);
-    const terms = resolveTermsForPath(doc, p.path);
-    return { content: [{ type: "text", text: `📋 Terms for "${p.path}":\n${JSON.stringify(terms, null, 2)}` }] };
-  }
-);
+server.registerTool("resolve_path_terms", { description: "Resolve governance terms for a specific URL path using aps.txt path overrides.", inputSchema: z.object({
+        apsTxt: z.string().describe("aps.txt JSON content"),
+        path: z.string().describe("URL path to resolve (e.g. /blog/my-article)"),
+      }) }, async (p) => {
+        const doc = JSON.parse(p.apsTxt);
+        const terms = resolveTermsForPath(doc, p.path);
+        return { content: [{ type: "text", text: `📋 Terms for "${p.path}":\n${JSON.stringify(terms, null, 2)}` }] };
+      });
 
-server.tool(
-  "create_chained_governance_block",
-  "Create a governance block for derivative content that references the original publisher's block. Preserves the chain of provenance.",
-  {
-    content: z.string().describe("Derivative content"),
-    publicKey: z.string().describe("Derivative agent's Ed25519 public key (hex)"),
-    privateKey: z.string().describe("Derivative agent's Ed25519 private key (hex)"),
-    parentBlock: z.string().describe("Original governance block JSON string"),
-    derivationType: z.string().describe("Type: summary, embedding, rag_chunk, translation, etc."),
-    inference: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
-    training: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
-  },
-  async (p) => {
-    const parent = JSON.parse(p.parentBlock);
-    const chained = createChainedGovernanceBlock({
-      content: p.content, publicKey: p.publicKey, privateKey: p.privateKey,
-      terms: { inference: p.inference, training: p.training },
-      parentBlock: parent, derivationType: p.derivationType,
-    });
-    return { content: [{ type: "text", text: `🔗 Chained Block Created\n\nOriginal publisher: ${chained.source_did}\nDerivative agent: ${chained.derivative_agent_did}\nDerivation: ${chained.derivation_type}\nParent hash: ${chained.parent_block_hash}\nContent hash: ${chained.content_hash}` }] };
-  }
-);
+server.registerTool("create_chained_governance_block", { description: "Create a governance block for derivative content that references the original publisher's block. Preserves the chain of provenance.", inputSchema: z.object({
+        content: z.string().describe("Derivative content"),
+        publicKey: z.string().describe("Derivative agent's Ed25519 public key (hex)"),
+        privateKey: z.string().describe("Derivative agent's Ed25519 private key (hex)"),
+        parentBlock: z.string().describe("Original governance block JSON string"),
+        derivationType: z.string().describe("Type: summary, embedding, rag_chunk, translation, etc."),
+        inference: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+        training: z.enum(["permitted", "prohibited", "compensation_required", "attribution_required"]).optional(),
+      }) }, async (p) => {
+        const parent = JSON.parse(p.parentBlock);
+        const chained = createChainedGovernanceBlock({
+          content: p.content, publicKey: p.publicKey, privateKey: p.privateKey,
+          terms: { inference: p.inference, training: p.training },
+          parentBlock: parent, derivationType: p.derivationType,
+        });
+        return { content: [{ type: "text", text: `🔗 Chained Block Created\n\nOriginal publisher: ${chained.source_did}\nDerivative agent: ${chained.derivative_agent_did}\nDerivation: ${chained.derivation_type}\nParent hash: ${chained.parent_block_hash}\nContent hash: ${chained.content_hash}` }] };
+      });
 
 // ═══════════════════════════════════════
 // Governance Consumer (agent-side 360 loop)
 // ═══════════════════════════════════════
 
-server.tool(
-  "governance_360",
-  "Execute the full governance 360 loop on HTML content: extract governance block → verify signature + content hash → check usage terms → create signed access receipt. This is what an agent calls on every page it reads.",
-  {
-    html: z.string().describe("Full HTML of the page"),
-    contentBody: z.string().describe("Article text content (for hash verification)"),
-    publisherPublicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
-    agentPublicKey: z.string().describe("Your agent's Ed25519 public key (hex)"),
-    agentPrivateKey: z.string().describe("Your agent's Ed25519 private key (hex)"),
-    intendedUsage: z.enum(["inference", "training", "redistribution", "derivative", "caching"]),
-    sourceUrl: z.string().describe("URL of the page"),
-  },
-  async (p) => {
-    const result = governanceLoop360({
-      html: p.html, contentBody: p.contentBody,
-      publisherPublicKey: p.publisherPublicKey,
-      agentPublicKey: p.agentPublicKey, agentPrivateKey: p.agentPrivateKey,
-      intendedUsage: p.intendedUsage, sourceUrl: p.sourceUrl,
-    });
-    return { content: [{ type: "text", text: `🔄 Governance 360 Loop\n\n${result.summary}\n\n${result.receipt ? `Receipt ID: ${result.receipt.receiptId}\nAccessed: ${result.receipt.accessed_at}` : 'No receipt (ungoverned content)'}` }] };
-  }
-);
+server.registerTool("governance_360", { description: "Execute the full governance 360 loop on HTML content: extract governance block → verify signature + content hash → check usage terms → create signed access receipt. This is what an agent calls on every page it reads.", inputSchema: z.object({
+        html: z.string().describe("Full HTML of the page"),
+        contentBody: z.string().describe("Article text content (for hash verification)"),
+        publisherPublicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
+        agentPublicKey: z.string().describe("Your agent's Ed25519 public key (hex)"),
+        agentPrivateKey: z.string().describe("Your agent's Ed25519 private key (hex)"),
+        intendedUsage: z.enum(["inference", "training", "redistribution", "derivative", "caching"]),
+        sourceUrl: z.string().describe("URL of the page"),
+      }) }, async (p) => {
+        const result = governanceLoop360({
+          html: p.html, contentBody: p.contentBody,
+          publisherPublicKey: p.publisherPublicKey,
+          agentPublicKey: p.agentPublicKey, agentPrivateKey: p.agentPrivateKey,
+          intendedUsage: p.intendedUsage, sourceUrl: p.sourceUrl,
+        });
+        return { content: [{ type: "text", text: `🔄 Governance 360 Loop\n\n${result.summary}\n\n${result.receipt ? `Receipt ID: ${result.receipt.receiptId}\nAccessed: ${result.receipt.accessed_at}` : 'No receipt (ungoverned content)'}` }] };
+      });
 
-server.tool(
-  "create_access_receipt",
-  "Create a signed access receipt — cryptographic proof that your agent consumed content under specific terms. The receipt captures terms and revocation policy at access time.",
-  {
-    agentPublicKey: z.string().describe("Your agent's Ed25519 public key (hex)"),
-    agentPrivateKey: z.string().describe("Your agent's Ed25519 private key (hex)"),
-    block: z.string().describe("Governance block JSON string"),
-    sourceUrl: z.string().describe("URL where content was accessed"),
-    intendedUsage: z.string().describe("How you intend to use this content"),
-  },
-  async (p) => {
-    const parsed = JSON.parse(p.block);
-    const receipt = createAccessReceipt({
-      agentPublicKey: p.agentPublicKey, agentPrivateKey: p.agentPrivateKey,
-      block: parsed, sourceUrl: p.sourceUrl, intendedUsage: p.intendedUsage,
-      governanceVerified: true,
-    });
-    return { content: [{ type: "text", text: `📝 Access Receipt Created\n\nID: ${receipt.receiptId}\nAgent: ${receipt.agent_did}\nPublisher: ${receipt.publisher_did}\nUsage: ${receipt.intended_usage}\nTerms: training=${receipt.terms_at_access.training || 'N/A'}\nRevocation: cached=${receipt.revocation_policy_at_access.cached_copy}` }] };
-  }
-);
+server.registerTool("create_access_receipt", { description: "Create a signed access receipt — cryptographic proof that your agent consumed content under specific terms. The receipt captures terms and revocation policy at access time.", inputSchema: z.object({
+        agentPublicKey: z.string().describe("Your agent's Ed25519 public key (hex)"),
+        agentPrivateKey: z.string().describe("Your agent's Ed25519 private key (hex)"),
+        block: z.string().describe("Governance block JSON string"),
+        sourceUrl: z.string().describe("URL where content was accessed"),
+        intendedUsage: z.string().describe("How you intend to use this content"),
+      }) }, async (p) => {
+        const parsed = JSON.parse(p.block);
+        const receipt = createAccessReceipt({
+          agentPublicKey: p.agentPublicKey, agentPrivateKey: p.agentPrivateKey,
+          block: parsed, sourceUrl: p.sourceUrl, intendedUsage: p.intendedUsage,
+          governanceVerified: true,
+        });
+        return { content: [{ type: "text", text: `📝 Access Receipt Created\n\nID: ${receipt.receiptId}\nAgent: ${receipt.agent_did}\nPublisher: ${receipt.publisher_did}\nUsage: ${receipt.intended_usage}\nTerms: training=${receipt.terms_at_access.training || 'N/A'}\nRevocation: cached=${receipt.revocation_policy_at_access.cached_copy}` }] };
+      });
 
 
 // ═══════════════════════════════════════
 // Rome-Complete: Charter & Institutional Governance
 // ═══════════════════════════════════════
 
-server.tool(
-  "create_charter",
-  "Create a new institutional charter — the constitutional root of an organization. Defines offices, amendment rules, dissolution policy.",
-  {
-    name: z.string().describe("Institution name"),
-    offices: z.array(z.object({
-      officeId: z.string(),
-      name: z.string(),
-      holderPublicKey: z.string().describe("Ed25519 public key of initial holder"),
-      allowedScopes: z.array(z.string()).default(["*"]),
-      maxSpendPerAction: z.number().default(1000),
-      maxDelegationDepth: z.number().default(3),
-      successionOrder: z.array(z.string()).default([]),
-      incompatibleOffices: z.array(z.string()).optional(),
-    })).describe("Offices to create"),
-    amendment_board_keys: z.array(z.string()).describe("Ed25519 public keys eligible for amendment voting"),
-    amendment_required_sigs: z.number().describe("Signatures required for amendment"),
-    dissolution_grace_seconds: z.number().default(86400),
-    founder_private_key: z.string().describe("Founder's Ed25519 private key"),
-    founder_public_key: z.string().describe("Founder's Ed25519 public key"),
-    founder_role: z.string().default("board"),
-  },
-  async (args) => {
-    const offices = args.offices.map(o => ({
-      officeId: o.officeId,
-      name: o.name,
-      holderMode: 'single' as const,
-      holderSet: [{ publicKey: o.holderPublicKey, appointedAt: new Date().toISOString(), appointedBy: 'charter_founding', isInterim: false }],
-      delegationPolicy: { allowedScopes: o.allowedScopes, maxSpendPerAction: o.maxSpendPerAction, maxDelegationDepth: o.maxDelegationDepth },
-      successionOrder: o.successionOrder,
-      status: 'active' as const,
-      effectiveAt: new Date().toISOString(),
-      incompatibleOffices: o.incompatibleOffices,
-    }));
-    const policy: MultiClassThresholdPolicy = {
-      policyId: 'amend_policy',
-      requirements: [{ role: 'board', requiredSignatures: args.amendment_required_sigs, eligibleKeys: args.amendment_board_keys }],
-      collectionTimeoutSeconds: 86400,
-      onTimeout: 'reject',
-      reevaluateOnRevocation: true,
-    };
-    const charter = createCharter({
-      name: args.name,
-      offices,
-      amendmentPolicy: policy,
-      dissolutionPolicy: {
-        requiresThreshold: policy,
-        gracePeriodSeconds: args.dissolution_grace_seconds,
-        activeEscrowHandling: 'settle_first',
-      },
-      delegationSurvival: { onOfficeChange: 'require_reconfirmation', onCharterAmendment: 'survive_if_compatible' },
-      founderPrivateKey: args.founder_private_key,
-      founderPublicKey: args.founder_public_key,
-      founderRole: args.founder_role,
-    });
-    state.charters.set(charter.charterId, charter);
-    return { content: [{ type: "text", text: `🏛️ Charter Created\n\nID: ${charter.charterId}\nName: ${charter.name}\nVersion: ${charter.version}\nOffices: ${charter.offices.map(o => o.name).join(', ')}\nSignatures: ${charter.foundingSignatures.length}` }] };
-  }
-);
+server.registerTool("create_charter", { description: "Create a new institutional charter — the constitutional root of an organization. Defines offices, amendment rules, dissolution policy.", inputSchema: z.object({
+        name: z.string().describe("Institution name"),
+        offices: z.array(z.object({
+          officeId: z.string(),
+          name: z.string(),
+          holderPublicKey: z.string().describe("Ed25519 public key of initial holder"),
+          allowedScopes: z.array(z.string()).default(["*"]),
+          maxSpendPerAction: z.number().default(1000),
+          maxDelegationDepth: z.number().default(3),
+          successionOrder: z.array(z.string()).default([]),
+          incompatibleOffices: z.array(z.string()).optional(),
+        })).describe("Offices to create"),
+        amendment_board_keys: z.array(z.string()).describe("Ed25519 public keys eligible for amendment voting"),
+        amendment_required_sigs: z.number().describe("Signatures required for amendment"),
+        dissolution_grace_seconds: z.number().default(86400),
+        founder_private_key: z.string().describe("Founder's Ed25519 private key"),
+        founder_public_key: z.string().describe("Founder's Ed25519 public key"),
+        founder_role: z.string().default("board"),
+      }) }, async (args) => {
+        const offices = args.offices.map(o => ({
+          officeId: o.officeId,
+          name: o.name,
+          holderMode: 'single' as const,
+          holderSet: [{ publicKey: o.holderPublicKey, appointedAt: new Date().toISOString(), appointedBy: 'charter_founding', isInterim: false }],
+          delegationPolicy: { allowedScopes: o.allowedScopes, maxSpendPerAction: o.maxSpendPerAction, maxDelegationDepth: o.maxDelegationDepth },
+          successionOrder: o.successionOrder,
+          status: 'active' as const,
+          effectiveAt: new Date().toISOString(),
+          incompatibleOffices: o.incompatibleOffices,
+        }));
+        const policy: MultiClassThresholdPolicy = {
+          policyId: 'amend_policy',
+          requirements: [{ role: 'board', requiredSignatures: args.amendment_required_sigs, eligibleKeys: args.amendment_board_keys }],
+          collectionTimeoutSeconds: 86400,
+          onTimeout: 'reject',
+          reevaluateOnRevocation: true,
+        };
+        const charter = createCharter({
+          name: args.name,
+          offices,
+          amendmentPolicy: policy,
+          dissolutionPolicy: {
+            requiresThreshold: policy,
+            gracePeriodSeconds: args.dissolution_grace_seconds,
+            activeEscrowHandling: 'settle_first',
+          },
+          delegationSurvival: { onOfficeChange: 'require_reconfirmation', onCharterAmendment: 'survive_if_compatible' },
+          founderPrivateKey: args.founder_private_key,
+          founderPublicKey: args.founder_public_key,
+          founderRole: args.founder_role,
+        });
+        state.charters.set(charter.charterId, charter);
+        return { content: [{ type: "text", text: `🏛️ Charter Created\n\nID: ${charter.charterId}\nName: ${charter.name}\nVersion: ${charter.version}\nOffices: ${charter.offices.map(o => o.name).join(', ')}\nSignatures: ${charter.foundingSignatures.length}` }] };
+      });
 
-server.tool(
-  "verify_charter",
-  "Verify a charter's integrity: content hash, signatures, office consistency, incompatibility.",
-  { charter_id: z.string().describe("Charter ID to verify") },
-  async (args) => {
-    const charter = state.charters.get(args.charter_id);
-    if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
-    const result = verifyCharter(charter);
-    const status = result.valid ? '✅ VALID' : '❌ INVALID';
-    return { content: [{ type: "text", text: `${status}\n\nContent integrity: ${result.contentIntegrity}\nSignatures valid: ${result.signaturesValid}\nQuorum met: ${result.quorumMet}\nNot dissolved: ${result.notDissolved}\nOffices valid: ${result.officesValid}\nIncompatibility clean: ${result.incompatibilityClean}${result.errors.length ? '\n\nErrors:\n' + result.errors.join('\n') : ''}` }] };
-  }
-);
+server.registerTool("verify_charter", { description: "Verify a charter's integrity: content hash, signatures, office consistency, incompatibility.", inputSchema: z.object({ charter_id: z.string().describe("Charter ID to verify") }) }, async (args) => {
+        const charter = state.charters.get(args.charter_id);
+        if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
+        const result = verifyCharter(charter);
+        const status = result.valid ? '✅ VALID' : '❌ INVALID';
+        return { content: [{ type: "text", text: `${status}\n\nContent integrity: ${result.contentIntegrity}\nSignatures valid: ${result.signaturesValid}\nQuorum met: ${result.quorumMet}\nNot dissolved: ${result.notDissolved}\nOffices valid: ${result.officesValid}\nIncompatibility clean: ${result.incompatibilityClean}${result.errors.length ? '\n\nErrors:\n' + result.errors.join('\n') : ''}` }] };
+      });
 
-server.tool(
-  "sign_charter",
-  "Add a founding signature to a charter.",
-  {
-    charter_id: z.string(),
-    signer_private_key: z.string(),
-    signer_public_key: z.string(),
-    signer_role: z.string().default("board"),
-    resigner_private_key: z.string().describe("Key to re-sign the outer charter envelope"),
-  },
-  async (args) => {
-    const charter = state.charters.get(args.charter_id);
-    if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
-    const signed = signCharter(charter, args.signer_private_key, args.signer_public_key, args.signer_role, args.resigner_private_key);
-    state.charters.set(signed.charterId, signed);
-    return { content: [{ type: "text", text: `✅ Signature added to ${signed.charterId}\n\nTotal signatures: ${signed.foundingSignatures.length}\nNew signer role: ${args.signer_role}` }] };
-  }
-);
+server.registerTool("sign_charter", { description: "Add a founding signature to a charter.", inputSchema: z.object({
+        charter_id: z.string(),
+        signer_private_key: z.string(),
+        signer_public_key: z.string(),
+        signer_role: z.string().default("board"),
+        resigner_private_key: z.string().describe("Key to re-sign the outer charter envelope"),
+      }) }, async (args) => {
+        const charter = state.charters.get(args.charter_id);
+        if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
+        const signed = signCharter(charter, args.signer_private_key, args.signer_public_key, args.signer_role, args.resigner_private_key);
+        state.charters.set(signed.charterId, signed);
+        return { content: [{ type: "text", text: `✅ Signature added to ${signed.charterId}\n\nTotal signatures: ${signed.foundingSignatures.length}\nNew signer role: ${args.signer_role}` }] };
+      });
 
-server.tool(
-  "evaluate_threshold",
-  "Evaluate whether signatures meet a multi-class threshold policy (Consilium Q5).",
-  {
-    charter_id: z.string().describe("Charter whose amendment policy to evaluate against"),
-    signatures: z.array(z.object({
-      publicKey: z.string(),
-      keyClass: z.string(),
-      signedAt: z.string().default(new Date().toISOString()),
-      signature: z.string().default(""),
-    })),
-  },
-  async (args) => {
-    const charter = state.charters.get(args.charter_id);
-    if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
-    const result = evaluateThreshold(charter.amendmentPolicy, args.signatures);
-    const classLines = result.classStatus.map(c => `  ${c.role}: ${c.collected}/${c.required} ${c.satisfied ? '✅' : '❌'}`).join('\n');
-    return { content: [{ type: "text", text: `${result.met ? '✅ THRESHOLD MET' : '❌ THRESHOLD NOT MET'}\n\nClasses:\n${classLines}\n\nTotal: ${result.totalValidSignatures}/${result.totalRequired}${result.errors.length ? '\n\nIssues:\n' + result.errors.join('\n') : ''}` }] };
-  }
-);
+server.registerTool("evaluate_threshold", { description: "Evaluate whether signatures meet a multi-class threshold policy (Consilium Q5).", inputSchema: z.object({
+        charter_id: z.string().describe("Charter whose amendment policy to evaluate against"),
+        signatures: z.array(z.object({
+          publicKey: z.string(),
+          keyClass: z.string(),
+          signedAt: z.string().default(new Date().toISOString()),
+          signature: z.string().default(""),
+        })),
+      }) }, async (args) => {
+        const charter = state.charters.get(args.charter_id);
+        if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
+        const result = evaluateThreshold(charter.amendmentPolicy, args.signatures);
+        const classLines = result.classStatus.map(c => `  ${c.role}: ${c.collected}/${c.required} ${c.satisfied ? '✅' : '❌'}`).join('\n');
+        return { content: [{ type: "text", text: `${result.met ? '✅ THRESHOLD MET' : '❌ THRESHOLD NOT MET'}\n\nClasses:\n${classLines}\n\nTotal: ${result.totalValidSignatures}/${result.totalRequired}${result.errors.length ? '\n\nIssues:\n' + result.errors.join('\n') : ''}` }] };
+      });
 
-server.tool(
-  "create_approval_request",
-  "Create a multi-party approval request for charter amendments, office transfers, etc.",
-  {
-    policy_id: z.string(),
-    subject: z.string().describe("What is being approved (e.g. amendment ID)"),
-    subject_type: z.enum(['charter_amendment', 'delegation', 'office_transfer', 'dissolution', 'escrow_release', 'dispute_resolution']),
-    requested_by: z.string(),
-    timeout_seconds: z.number().default(86400),
-  },
-  async (args) => {
-    const req = createApprovalRequest(args.policy_id, args.subject, args.subject_type, args.requested_by, args.timeout_seconds);
-    state.approvalRequests.set(req.requestId, req);
-    return { content: [{ type: "text", text: `📋 Approval Request Created\n\nID: ${req.requestId}\nSubject: ${req.subject} (${req.subjectType})\nStatus: ${req.status}\nExpires: ${req.expiresAt}` }] };
-  }
-);
+server.registerTool("create_approval_request", { description: "Create a multi-party approval request for charter amendments, office transfers, etc.", inputSchema: z.object({
+        policy_id: z.string(),
+        subject: z.string().describe("What is being approved (e.g. amendment ID)"),
+        subject_type: z.enum(['charter_amendment', 'delegation', 'office_transfer', 'dissolution', 'escrow_release', 'dispute_resolution']),
+        requested_by: z.string(),
+        timeout_seconds: z.number().default(86400),
+      }) }, async (args) => {
+        const req = createApprovalRequest(args.policy_id, args.subject, args.subject_type, args.requested_by, args.timeout_seconds);
+        state.approvalRequests.set(req.requestId, req);
+        return { content: [{ type: "text", text: `📋 Approval Request Created\n\nID: ${req.requestId}\nSubject: ${req.subject} (${req.subjectType})\nStatus: ${req.status}\nExpires: ${req.expiresAt}` }] };
+      });
 
-server.tool(
-  "add_approval_signature",
-  "Add a signature to an approval request.",
-  {
-    request_id: z.string(),
-    signer_private_key: z.string(),
-    signer_public_key: z.string(),
-    key_class: z.string().default("board"),
-    office_id: z.string().optional(),
-  },
-  async (args) => {
-    const req = state.approvalRequests.get(args.request_id);
-    if (!req) return { content: [{ type: "text", text: `❌ Request ${args.request_id} not found` }] };
-    const updated = addApprovalSignature(req, args.signer_private_key, args.signer_public_key, args.key_class, args.office_id);
-    state.approvalRequests.set(updated.requestId, updated);
-    return { content: [{ type: "text", text: `✅ Signature added\n\nRequest: ${updated.requestId}\nTotal signatures: ${updated.signatures.length}\nStatus: ${updated.status}` }] };
-  }
-);
+server.registerTool("add_approval_signature", { description: "Add a signature to an approval request.", inputSchema: z.object({
+        request_id: z.string(),
+        signer_private_key: z.string(),
+        signer_public_key: z.string(),
+        key_class: z.string().default("board"),
+        office_id: z.string().optional(),
+      }) }, async (args) => {
+        const req = state.approvalRequests.get(args.request_id);
+        if (!req) return { content: [{ type: "text", text: `❌ Request ${args.request_id} not found` }] };
+        const updated = addApprovalSignature(req, args.signer_private_key, args.signer_public_key, args.key_class, args.office_id);
+        state.approvalRequests.set(updated.requestId, updated);
+        return { content: [{ type: "text", text: `✅ Signature added\n\nRequest: ${updated.requestId}\nTotal signatures: ${updated.signatures.length}\nStatus: ${updated.status}` }] };
+      });
 
-server.tool(
-  "create_hybrid_timestamp",
-  "Create a gateway-issued hybrid timestamp (Consilium Q1: HLC + NTP uncertainty).",
-  {
-    gateway_id: z.string().describe("Gateway issuing the timestamp"),
-    drift_ms: z.number().default(50).describe("NTP drift bound in milliseconds"),
-  },
-  async (args) => {
-    const ts = createHybridTimestamp(args.gateway_id, args.drift_ms);
-    return { content: [{ type: "text", text: `⏱️ Hybrid Timestamp\n\nLogical time: ${ts.logicalTime}\nWall clock earliest: ${new Date(ts.wallClockEarliest).toISOString()}\nWall clock latest: ${new Date(ts.wallClockLatest).toISOString()}\nGateway: ${ts.gatewayId}\nUncertainty: ±${args.drift_ms}ms` }] };
-  }
-);
+server.registerTool("create_hybrid_timestamp", { description: "Create a gateway-issued hybrid timestamp (Consilium Q1: HLC + NTP uncertainty).", inputSchema: z.object({
+        gateway_id: z.string().describe("Gateway issuing the timestamp"),
+        drift_ms: z.number().default(50).describe("NTP drift bound in milliseconds"),
+      }) }, async (args) => {
+        const ts = createHybridTimestamp(args.gateway_id, args.drift_ms);
+        return { content: [{ type: "text", text: `⏱️ Hybrid Timestamp\n\nLogical time: ${ts.logicalTime}\nWall clock earliest: ${new Date(ts.wallClockEarliest).toISOString()}\nWall clock latest: ${new Date(ts.wallClockLatest).toISOString()}\nGateway: ${ts.gatewayId}\nUncertainty: ±${args.drift_ms}ms` }] };
+      });
 
-server.tool(
-  "compare_timestamps",
-  "Compare two hybrid timestamps to determine ordering.",
-  {
-    a: z.object({ logicalTime: z.number(), wallClockEarliest: z.number(), wallClockLatest: z.number(), gatewayId: z.string() }),
-    b: z.object({ logicalTime: z.number(), wallClockEarliest: z.number(), wallClockLatest: z.number(), gatewayId: z.string() }),
-  },
-  async (args) => {
-    const order = compareTimestamps(args.a, args.b);
-    return { content: [{ type: "text", text: `⏱️ Temporal Ordering: ${order}\n\nA: logical=${args.a.logicalTime} wall=[${args.a.wallClockEarliest},${args.a.wallClockLatest}] gw=${args.a.gatewayId}\nB: logical=${args.b.logicalTime} wall=[${args.b.wallClockEarliest},${args.b.wallClockLatest}] gw=${args.b.gatewayId}` }] };
-  }
-);
+server.registerTool("compare_timestamps", { description: "Compare two hybrid timestamps to determine ordering.", inputSchema: z.object({
+        a: z.object({ logicalTime: z.number(), wallClockEarliest: z.number(), wallClockLatest: z.number(), gatewayId: z.string() }),
+        b: z.object({ logicalTime: z.number(), wallClockEarliest: z.number(), wallClockLatest: z.number(), gatewayId: z.string() }),
+      }) }, async (args) => {
+        const order = compareTimestamps(args.a, args.b);
+        return { content: [{ type: "text", text: `⏱️ Temporal Ordering: ${order}\n\nA: logical=${args.a.logicalTime} wall=[${args.a.wallClockEarliest},${args.a.wallClockLatest}] gw=${args.a.gatewayId}\nB: logical=${args.b.logicalTime} wall=[${args.b.wallClockEarliest},${args.b.wallClockLatest}] gw=${args.b.gatewayId}` }] };
+      });
 
-server.tool(
-  "validate_temporal_rights",
-  "Validate a TemporalRights object — check validity window, grace period, supersession, challenge window.",
-  {
-    valid_from: z.string().describe("ISO datetime"),
-    valid_until: z.string().describe("ISO datetime"),
-    challenge_until: z.string().optional(),
-    grace_until: z.string().optional(),
-    superseded_at: z.string().optional(),
-    effective_at: z.string().optional(),
-  },
-  async (args) => {
-    const result = validateTemporalRights({
-      validFrom: args.valid_from, validUntil: args.valid_until,
-      challengeUntil: args.challenge_until, graceUntil: args.grace_until,
-      supersededAt: args.superseded_at, effectiveAt: args.effective_at,
-    });
-    return { content: [{ type: "text", text: `⏱️ Temporal Validation\n\nValid: ${result.valid}\nIn grace: ${result.inGracePeriod}\nSuperseded: ${result.superseded}\nChallenge open: ${result.challengeWindowOpen}\nEffective: ${result.effective}${result.errors.length ? '\n\nIssues:\n' + result.errors.join('\n') : ''}` }] };
-  }
-);
+server.registerTool("validate_temporal_rights", { description: "Validate a TemporalRights object — check validity window, grace period, supersession, challenge window.", inputSchema: z.object({
+        valid_from: z.string().describe("ISO datetime"),
+        valid_until: z.string().describe("ISO datetime"),
+        challenge_until: z.string().optional(),
+        grace_until: z.string().optional(),
+        superseded_at: z.string().optional(),
+        effective_at: z.string().optional(),
+      }) }, async (args) => {
+        const result = validateTemporalRights({
+          validFrom: args.valid_from, validUntil: args.valid_until,
+          challengeUntil: args.challenge_until, graceUntil: args.grace_until,
+          supersededAt: args.superseded_at, effectiveAt: args.effective_at,
+        });
+        return { content: [{ type: "text", text: `⏱️ Temporal Validation\n\nValid: ${result.valid}\nIn grace: ${result.inGracePeriod}\nSuperseded: ${result.superseded}\nChallenge open: ${result.challengeWindowOpen}\nEffective: ${result.effective}${result.errors.length ? '\n\nIssues:\n' + result.errors.join('\n') : ''}` }] };
+      });
 
-server.tool(
-  "create_reserve_attestation",
-  "Create a signed reserve attestation proving a delegation has actual funds (GPT #15).",
-  {
-    delegation_id: z.string(),
-    assurance_class: z.enum(['unbacked', 'self_attested', 'gateway_attested', 'escrow_backed', 'externally_attested']),
-    amount: z.number(),
-    currency: z.string().default("USD"),
-    attestation_basis: z.enum(['api_balance_check', 'bank_statement', 'escrow_lock', 'self_declaration']),
-    false_attestation_penalty: z.enum(['reputation_slash', 'bond_forfeit', 'dispute_eligible', 'none']).default('reputation_slash'),
-    attester_private_key: z.string(),
-    attester_public_key: z.string(),
-    charter_anchor: z.string().optional(),
-    office_id: z.string().optional(),
-    ttl_seconds: z.number().default(86400),
-  },
-  async (args) => {
-    const att = createReserveAttestation({
-      delegationId: args.delegation_id, assuranceClass: args.assurance_class,
-      amount: args.amount, currency: args.currency,
-      liability: { attestationBasis: args.attestation_basis, isRevocable: false, falseAttestationPenalty: args.false_attestation_penalty },
-      attesterPrivateKey: args.attester_private_key, attesterPublicKey: args.attester_public_key,
-      charterAnchor: args.charter_anchor, officeId: args.office_id, ttlSeconds: args.ttl_seconds,
-    });
-    return { content: [{ type: "text", text: `💰 Reserve Attestation Created\n\nID: ${att.attestationId}\nDelegation: ${att.delegationId}\nAssurance: ${att.assuranceClass}\nAmount: ${att.attestedAmount.value} ${att.attestedAmount.currency}\nExpires: ${att.expiresAt}` }] };
-  }
-);
+server.registerTool("create_reserve_attestation", { description: "Create a signed reserve attestation proving a delegation has actual funds (GPT #15).", inputSchema: z.object({
+        delegation_id: z.string(),
+        assurance_class: z.enum(['unbacked', 'self_attested', 'gateway_attested', 'escrow_backed', 'externally_attested']),
+        amount: z.number(),
+        currency: z.string().default("USD"),
+        attestation_basis: z.enum(['api_balance_check', 'bank_statement', 'escrow_lock', 'self_declaration']),
+        false_attestation_penalty: z.enum(['reputation_slash', 'bond_forfeit', 'dispute_eligible', 'none']).default('reputation_slash'),
+        attester_private_key: z.string(),
+        attester_public_key: z.string(),
+        charter_anchor: z.string().optional(),
+        office_id: z.string().optional(),
+        ttl_seconds: z.number().default(86400),
+      }) }, async (args) => {
+        const att = createReserveAttestation({
+          delegationId: args.delegation_id, assuranceClass: args.assurance_class,
+          amount: args.amount, currency: args.currency,
+          liability: { attestationBasis: args.attestation_basis, isRevocable: false, falseAttestationPenalty: args.false_attestation_penalty },
+          attesterPrivateKey: args.attester_private_key, attesterPublicKey: args.attester_public_key,
+          charterAnchor: args.charter_anchor, officeId: args.office_id, ttlSeconds: args.ttl_seconds,
+        });
+        return { content: [{ type: "text", text: `💰 Reserve Attestation Created\n\nID: ${att.attestationId}\nDelegation: ${att.delegationId}\nAssurance: ${att.assuranceClass}\nAmount: ${att.attestedAmount.value} ${att.attestedAmount.currency}\nExpires: ${att.expiresAt}` }] };
+      });
 
-server.tool(
-  "vouch_reputation",
-  "Create a vouched reputation for cross-gateway portability (WS-3). Signed summary — no receipt history exposed.",
-  {
-    agent_id: z.string(),
-    tier: z.number(),
-    diversity_score: z.number(),
-    gateway_private_key: z.string(),
-    gateway_id: z.string(),
-    ttl_seconds: z.number().default(2592000).describe("Default 30 days"),
-  },
-  async (args) => {
-    const rep = vouchReputation({
-      agentId: args.agent_id, tier: args.tier, diversityScore: args.diversity_score,
-      gatewayPrivateKey: args.gateway_private_key, gatewayId: args.gateway_id, ttlSeconds: args.ttl_seconds,
-    });
-    return { content: [{ type: "text", text: `🌐 Vouched Reputation Created\n\nAgent: ${rep.agentId}\nTier: ${rep.attestedTier}\nDiversity: ${rep.attestedDiversityScore}\nGateway: ${rep.originGatewayId}\nExpires: ${rep.expiresAt}` }] };
-  }
-);
+server.registerTool("vouch_reputation", { description: "Create a vouched reputation for cross-gateway portability (WS-3). Signed summary — no receipt history exposed.", inputSchema: z.object({
+        agent_id: z.string(),
+        tier: z.number(),
+        diversity_score: z.number(),
+        gateway_private_key: z.string(),
+        gateway_id: z.string(),
+        ttl_seconds: z.number().default(2592000).describe("Default 30 days"),
+      }) }, async (args) => {
+        const rep = vouchReputation({
+          agentId: args.agent_id, tier: args.tier, diversityScore: args.diversity_score,
+          gatewayPrivateKey: args.gateway_private_key, gatewayId: args.gateway_id, ttlSeconds: args.ttl_seconds,
+        });
+        return { content: [{ type: "text", text: `🌐 Vouched Reputation Created\n\nAgent: ${rep.agentId}\nTier: ${rep.attestedTier}\nDiversity: ${rep.attestedDiversityScore}\nGateway: ${rep.originGatewayId}\nExpires: ${rep.expiresAt}` }] };
+      });
 
-server.tool(
-  "apply_reputation_downgrade",
-  "Apply import policy downgrade to a foreign vouched reputation.",
-  {
-    agent_id: z.string(),
-    origin_gateway_id: z.string(),
-    attested_tier: z.number(),
-    attested_diversity_score: z.number(),
-    accept_from: z.array(z.string()).describe("Gateway IDs accepted by import policy"),
-    downgrade_ratio: z.number().default(0.5),
-    foreign_default_tier: z.number().default(0),
-  },
-  async (args) => {
-    const rep = { agentId: args.agent_id, originGatewayId: args.origin_gateway_id, attestedTier: args.attested_tier, attestedDiversityScore: args.attested_diversity_score, attestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(), originGatewaySignature: '' };
-    const policy: GatewayImportPolicy = {
-      receipts: { acceptFrom: args.accept_from, requireWitness: true },
-      reputation: { acceptFrom: args.accept_from, downgradeRatio: args.downgrade_ratio },
-      witnessAttestations: { acceptFrom: args.accept_from, minObservationBasis: 'independent_recomputation' },
-      reserveAttestations: { acceptFrom: [], requireLiabilityClass: true },
-      charterFacts: { acceptFrom: args.accept_from },
-      foreignAgentDefaultTier: args.foreign_default_tier,
-    };
-    const result = applyReputationDowngrade(rep, policy);
-    return { content: [{ type: "text", text: `🌐 Reputation Downgrade\n\nAccepted: ${result.accepted}\nOriginal tier: ${args.attested_tier} → Effective: ${result.effectiveTier}\nOriginal diversity: ${args.attested_diversity_score} → Effective: ${result.effectiveDiversity.toFixed(2)}\nDowngrade ratio: ${args.downgrade_ratio}` }] };
-  }
-);
+server.registerTool("apply_reputation_downgrade", { description: "Apply import policy downgrade to a foreign vouched reputation.", inputSchema: z.object({
+        agent_id: z.string(),
+        origin_gateway_id: z.string(),
+        attested_tier: z.number(),
+        attested_diversity_score: z.number(),
+        accept_from: z.array(z.string()).describe("Gateway IDs accepted by import policy"),
+        downgrade_ratio: z.number().default(0.5),
+        foreign_default_tier: z.number().default(0),
+      }) }, async (args) => {
+        const rep = { agentId: args.agent_id, originGatewayId: args.origin_gateway_id, attestedTier: args.attested_tier, attestedDiversityScore: args.attested_diversity_score, attestedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(), originGatewaySignature: '' };
+        const policy: GatewayImportPolicy = {
+          receipts: { acceptFrom: args.accept_from, requireWitness: true },
+          reputation: { acceptFrom: args.accept_from, downgradeRatio: args.downgrade_ratio },
+          witnessAttestations: { acceptFrom: args.accept_from, minObservationBasis: 'independent_recomputation' },
+          reserveAttestations: { acceptFrom: [], requireLiabilityClass: true },
+          charterFacts: { acceptFrom: args.accept_from },
+          foreignAgentDefaultTier: args.foreign_default_tier,
+        };
+        const result = applyReputationDowngrade(rep, policy);
+        return { content: [{ type: "text", text: `🌐 Reputation Downgrade\n\nAccepted: ${result.accepted}\nOriginal tier: ${args.attested_tier} → Effective: ${result.effectiveTier}\nOriginal diversity: ${args.attested_diversity_score} → Effective: ${result.effectiveDiversity.toFixed(2)}\nDowngrade ratio: ${args.downgrade_ratio}` }] };
+      });
 
 // ═══════════════════════════════════════
 // v1.33.0 — action_ref + freshness + evidence-based grade
 // ═══════════════════════════════════════
 
-server.tool(
-  "compute_action_ref",
-  "Compute content-addressed request identity (SHA-256 of agentId + actionType + scope + normalized timestamp). Two receipts with the same action_ref describe the same request.",
-  {
-    agent_id: z.string(),
-    action_type: z.string(),
-    scope_required: z.array(z.string()),
-    timestamp: z.string().optional().describe("ISO 8601 timestamp; defaults to now"),
-  },
-  async (args) => {
-    const intent = {
-      agentId: args.agent_id,
-      action: { type: args.action_type, scopeRequired: args.scope_required },
-      createdAt: args.timestamp ?? new Date().toISOString(),
-    } as any;
-    const ref = computeActionRef(intent);
-    return { content: [{ type: "text", text: `🔗 action_ref: ${ref}\n\nAgent: ${args.agent_id}\nType: ${args.action_type}\nScope: ${args.scope_required.join(', ')}\nTimestamp: ${intent.createdAt}` }] };
-  }
-);
+server.registerTool("compute_action_ref", { description: "Compute content-addressed request identity (SHA-256 of agentId + actionType + scope + normalized timestamp). Two receipts with the same action_ref describe the same request.", inputSchema: z.object({
+        agent_id: z.string(),
+        action_type: z.string(),
+        scope_required: z.array(z.string()),
+        timestamp: z.string().optional().describe("ISO 8601 timestamp; defaults to now"),
+      }) }, async (args) => {
+        const intent = {
+          agentId: args.agent_id,
+          action: { type: args.action_type, scopeRequired: args.scope_required },
+          createdAt: args.timestamp ?? new Date().toISOString(),
+        } as any;
+        const ref = computeActionRef(intent);
+        return { content: [{ type: "text", text: `🔗 action_ref: ${ref}\n\nAgent: ${args.agent_id}\nType: ${args.action_type}\nScope: ${args.scope_required.join(', ')}\nTimestamp: ${intent.createdAt}` }] };
+      });
 
-server.tool(
-  "is_evidence_fresh",
-  "Check whether typed attestation evidence is still fresh. rotating: ttl required; snapshot: maxAge optional; static: always fresh.",
-  {
-    type: z.enum(['rotating', 'snapshot', 'static']),
-    valid_at: z.string().describe("ISO 8601 timestamp evidence was produced"),
-    ttl: z.number().optional().describe("Seconds (required for rotating)"),
-    max_age: z.number().optional().describe("Seconds (optional for snapshot)"),
-    now: z.string().optional().describe("ISO 8601 override for current time"),
-  },
-  async (args) => {
-    const freshness: any = { type: args.type, validAt: args.valid_at };
-    if (args.ttl !== undefined) freshness.ttl = args.ttl;
-    if (args.max_age !== undefined) freshness.maxAge = args.max_age;
-    const nowDate = args.now ? new Date(args.now) : undefined;
-    const fresh = isEvidenceFresh(freshness, nowDate);
-    const ageSec = computeEvidenceAge(freshness, nowDate);
-    return { content: [{ type: "text", text: `${fresh ? '✅' : '❌'} Evidence fresh: ${fresh}\n\nType: ${args.type}\nValid at: ${args.valid_at}\nAge: ${ageSec}s${args.ttl !== undefined ? `\nTTL: ${args.ttl}s` : ''}${args.max_age !== undefined ? `\nMax age: ${args.max_age}s` : ''}` }] };
-  }
-);
+server.registerTool("is_evidence_fresh", { description: "Check whether typed attestation evidence is still fresh. rotating: ttl required; snapshot: maxAge optional; static: always fresh.", inputSchema: z.object({
+        type: z.enum(['rotating', 'snapshot', 'static']),
+        valid_at: z.string().describe("ISO 8601 timestamp evidence was produced"),
+        ttl: z.number().optional().describe("Seconds (required for rotating)"),
+        max_age: z.number().optional().describe("Seconds (optional for snapshot)"),
+        now: z.string().optional().describe("ISO 8601 override for current time"),
+      }) }, async (args) => {
+        const freshness: any = { type: args.type, validAt: args.valid_at };
+        if (args.ttl !== undefined) freshness.ttl = args.ttl;
+        if (args.max_age !== undefined) freshness.maxAge = args.max_age;
+        const nowDate = args.now ? new Date(args.now) : undefined;
+        const fresh = isEvidenceFresh(freshness, nowDate);
+        const ageSec = computeEvidenceAge(freshness, nowDate);
+        return { content: [{ type: "text", text: `${fresh ? '✅' : '❌'} Evidence fresh: ${fresh}\n\nType: ${args.type}\nValid at: ${args.valid_at}\nAge: ${ageSec}s${args.ttl !== undefined ? `\nTTL: ${args.ttl}s` : ''}${args.max_age !== undefined ? `\nMax age: ${args.max_age}s` : ''}` }] };
+      });
 
-server.tool(
-  "classify_evidence_quality",
-  "Classify attestation evidence quality (none / issuer_vouched / infrastructure / principal_bound) and return the corresponding grade (0-3).",
-  {
-    method: z.string().optional().describe("Attestation method (e.g. 'spiffe')"),
-    has_issuer_signature: z.boolean().optional(),
-    has_principal_binding: z.boolean().optional(),
-    evidence: z.record(z.any()).optional().describe("Evidence object (checked for known infrastructure keys)"),
-  },
-  async (args) => {
-    const quality = classifyEvidenceQuality({
-      method: args.method,
-      hasIssuerSignature: args.has_issuer_signature,
-      hasPrincipalBinding: args.has_principal_binding,
-      evidence: args.evidence,
-    });
-    const grade = evidenceQualityToGrade(quality);
-    return { content: [{ type: "text", text: `🎖️ Evidence Quality: ${quality}\nGrade: ${grade}\n\nInputs:\n  method: ${args.method ?? 'none'}\n  issuerSignature: ${args.has_issuer_signature ?? false}\n  principalBinding: ${args.has_principal_binding ?? false}\n  evidence keys: ${args.evidence ? Object.keys(args.evidence).join(', ') || '(empty)' : '(none)'}` }] };
-  }
-);
+server.registerTool("classify_evidence_quality", { description: "Classify attestation evidence quality (none / issuer_vouched / infrastructure / principal_bound) and return the corresponding grade (0-3).", inputSchema: z.object({
+        method: z.string().optional().describe("Attestation method (e.g. 'spiffe')"),
+        has_issuer_signature: z.boolean().optional(),
+        has_principal_binding: z.boolean().optional(),
+        evidence: z.record(z.string(), z.any()).optional().describe("Evidence object (checked for known infrastructure keys)"),
+      }) }, async (args) => {
+        const quality = classifyEvidenceQuality({
+          method: args.method,
+          hasIssuerSignature: args.has_issuer_signature,
+          hasPrincipalBinding: args.has_principal_binding,
+          evidence: args.evidence,
+        });
+        const grade = evidenceQualityToGrade(quality);
+        return { content: [{ type: "text", text: `🎖️ Evidence Quality: ${quality}\nGrade: ${grade}\n\nInputs:\n  method: ${args.method ?? 'none'}\n  issuerSignature: ${args.has_issuer_signature ?? false}\n  principalBinding: ${args.has_principal_binding ?? false}\n  evidence keys: ${args.evidence ? Object.keys(args.evidence).join(', ') || '(empty)' : '(none)'}` }] };
+      });
 
 // ═══════════════════════════════════════
 // Key Rotation — DID Document + Identity Continuity
 // ═══════════════════════════════════════
 
-server.tool(
-  "rotate_key",
-  "Rotate an agent's Ed25519 key. Planned mode: configurable overlap (default 24h). Emergency mode: immediate old-key retirement. Returns updated DID document, rotation state, and revocation results.",
-  {
-    mode: z.enum(['planned', 'emergency']),
-    old_private_key: z.string().describe("Hex-encoded private key being rotated FROM"),
-    agent_name: z.string().optional().describe("Agent name for the passport (default: current session)"),
-    activation_delay_hours: z.number().optional().describe("Planned mode overlap hours (default: 24)"),
-    delegation_ids_to_revoke: z.array(z.string()).optional().describe("Delegation IDs to cascade-revoke during rotation"),
-  },
-  async (args) => {
-    const { generateKeyPair } = await import("agent-passport-system");
-    const oldPublicKey = (await import("agent-passport-system")).publicKeyFromPrivate(args.old_private_key);
-    const newKeyPair = generateKeyPair();
-    const passport = {
-      version: '1.0', agentId: `agent-${oldPublicKey.slice(0, 8)}`, agentName: args.agent_name || 'MCP Agent',
-      ownerAlias: 'mcp', publicKey: oldPublicKey, mission: 'key rotation', capabilities: ['rotate'],
-      runtime: { platform: 'mcp', models: ['claude'], toolsCount: 128, memoryType: 'session' },
-      createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(),
-      voteWeight: 1, reputation: { overall: 0, collaborationsCompleted: 0, proposalsSubmitted: 0, proposalsApproved: 0, tokensContributed: 0, tasksCompleted: 0, lastUpdated: new Date().toISOString() },
-      delegations: [], metadata: {},
-    } as any;
-    const doc = createDIDDocument(passport);
-    const delayMs = args.activation_delay_hours != null ? args.activation_delay_hours * 3600000 : undefined;
-    const result = rotateAndInvalidate(
-      doc, args.old_private_key, newKeyPair,
-      args.delegation_ids_to_revoke || [],
-      { mode: args.mode, activationDelayMs: delayMs },
-    );
-    return { content: [{ type: "text", text: `🔑 Key Rotation (${args.mode})\n\nState: ${result.rotationState}\nOld key: ${oldPublicKey.slice(0, 16)}...\nNew key: ${newKeyPair.publicKey.slice(0, 16)}...\nNew private key: ${newKeyPair.privateKey}\nDID: ${result.didDocument.id}\nRotation log entries: ${result.didDocument.rotationLog.length}\nRevocations: ${result.revocationResults.length} (${result.revocationResults.filter(r => !r.error).length} succeeded)\n\nActivation time: ${result.didDocument.pendingRotation?.activationTime || 'immediate'}` }] };
-  }
-);
+server.registerTool("rotate_key", { description: "Rotate an agent's Ed25519 key. Planned mode: configurable overlap (default 24h). Emergency mode: immediate old-key retirement. Returns updated DID document, rotation state, and revocation results.", inputSchema: z.object({
+        mode: z.enum(['planned', 'emergency']),
+        old_private_key: z.string().describe("Hex-encoded private key being rotated FROM"),
+        agent_name: z.string().optional().describe("Agent name for the passport (default: current session)"),
+        activation_delay_hours: z.number().optional().describe("Planned mode overlap hours (default: 24)"),
+        delegation_ids_to_revoke: z.array(z.string()).optional().describe("Delegation IDs to cascade-revoke during rotation"),
+      }) }, async (args) => {
+        const { generateKeyPair } = await import("agent-passport-system");
+        const oldPublicKey = (await import("agent-passport-system")).publicKeyFromPrivate(args.old_private_key);
+        const newKeyPair = generateKeyPair();
+        const passport = {
+          version: '1.0', agentId: `agent-${oldPublicKey.slice(0, 8)}`, agentName: args.agent_name || 'MCP Agent',
+          ownerAlias: 'mcp', publicKey: oldPublicKey, mission: 'key rotation', capabilities: ['rotate'],
+          runtime: { platform: 'mcp', models: ['claude'], toolsCount: 128, memoryType: 'session' },
+          createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(),
+          voteWeight: 1, reputation: { overall: 0, collaborationsCompleted: 0, proposalsSubmitted: 0, proposalsApproved: 0, tokensContributed: 0, tasksCompleted: 0, lastUpdated: new Date().toISOString() },
+          delegations: [], metadata: {},
+        } as any;
+        const doc = createDIDDocument(passport);
+        const delayMs = args.activation_delay_hours != null ? args.activation_delay_hours * 3600000 : undefined;
+        const result = rotateAndInvalidate(
+          doc, args.old_private_key, newKeyPair,
+          args.delegation_ids_to_revoke || [],
+          { mode: args.mode, activationDelayMs: delayMs },
+        );
+        return { content: [{ type: "text", text: `🔑 Key Rotation (${args.mode})\n\nState: ${result.rotationState}\nOld key: ${oldPublicKey.slice(0, 16)}...\nNew key: ${newKeyPair.publicKey.slice(0, 16)}...\nNew private key: ${newKeyPair.privateKey}\nDID: ${result.didDocument.id}\nRotation log entries: ${result.didDocument.rotationLog.length}\nRevocations: ${result.revocationResults.length} (${result.revocationResults.filter(r => !r.error).length} succeeded)\n\nActivation time: ${result.didDocument.pendingRotation?.activationTime || 'immediate'}` }] };
+      });
 
-server.tool(
-  "verify_rotation_chain",
-  "Verify all rotation signatures in a DID document's rotation log. Returns true if the full chain is cryptographically valid.",
-  {
-    did_document: z.any().describe("RotatableDIDDocument JSON object with rotationLog"),
-  },
-  async (args) => {
-    const doc = args.did_document;
-    if (!doc || !Array.isArray(doc.rotationLog)) {
-      return { content: [{ type: "text", text: `❌ Invalid DID document: missing rotationLog array` }] };
-    }
-    const valid = verifyRotationChain(doc);
-    return { content: [{ type: "text", text: `${valid ? '✅' : '❌'} Rotation chain valid: ${valid}\n\nEntries verified: ${doc.rotationLog.length}\nDID: ${doc.id || 'unknown'}` }] };
-  }
-);
+server.registerTool("verify_rotation_chain", { description: "Verify all rotation signatures in a DID document's rotation log. Returns true if the full chain is cryptographically valid.", inputSchema: z.object({
+        did_document: z.any().describe("RotatableDIDDocument JSON object with rotationLog"),
+      }) }, async (args) => {
+        const doc = args.did_document;
+        if (!doc || !Array.isArray(doc.rotationLog)) {
+          return { content: [{ type: "text", text: `❌ Invalid DID document: missing rotationLog array` }] };
+        }
+        const valid = verifyRotationChain(doc);
+        return { content: [{ type: "text", text: `${valid ? '✅' : '❌'} Rotation chain valid: ${valid}\n\nEntries verified: ${doc.rotationLog.length}\nDID: ${doc.id || 'unknown'}` }] };
+      });
 
-server.tool(
-  "is_key_active",
-  "Check if a public key is currently authorized for active operations in a DID document. SDK convenience check; gateway enforcement is authoritative.",
-  {
-    did_document: z.any().describe("RotatableDIDDocument JSON object"),
-    public_key: z.string().describe("Hex-encoded Ed25519 public key to check"),
-  },
-  async (args) => {
-    const doc = args.did_document;
-    if (!doc || !Array.isArray(doc.verificationMethod)) {
-      return { content: [{ type: "text", text: `❌ Invalid DID document: missing verificationMethod` }] };
-    }
-    const active = isKeyActive(doc, args.public_key);
-    return { content: [{ type: "text", text: `${active ? '✅ Active' : '🔒 Inactive/Retired'}\n\nKey: ${args.public_key.slice(0, 16)}...\nDID: ${doc.id || 'unknown'}\nVerification methods: ${doc.verificationMethod.length}\nRotation log entries: ${(doc.rotationLog || []).length}` }] };
-  }
-);
+server.registerTool("is_key_active", { description: "Check if a public key is currently authorized for active operations in a DID document. SDK convenience check; gateway enforcement is authoritative.", inputSchema: z.object({
+        did_document: z.any().describe("RotatableDIDDocument JSON object"),
+        public_key: z.string().describe("Hex-encoded Ed25519 public key to check"),
+      }) }, async (args) => {
+        const doc = args.did_document;
+        if (!doc || !Array.isArray(doc.verificationMethod)) {
+          return { content: [{ type: "text", text: `❌ Invalid DID document: missing verificationMethod` }] };
+        }
+        const active = isKeyActive(doc, args.public_key);
+        return { content: [{ type: "text", text: `${active ? '✅ Active' : '🔒 Inactive/Retired'}\n\nKey: ${args.public_key.slice(0, 16)}...\nDID: ${doc.id || 'unknown'}\nVerification methods: ${doc.verificationMethod.length}\nRotation log entries: ${(doc.rotationLog || []).length}` }] };
+      });
 
 // ═══════════════════════════════════════════════════════════════
 // v2 Boundary Primitives — AttributionConsent, ProvisionalStatement,
@@ -5120,249 +4524,194 @@ server.tool(
 
 // ── AttributionConsent (representation boundary) ────────────────
 
-server.tool(
-  "aps_create_attribution_receipt",
-  "Representation boundary: build a citer-signed AttributionReceipt attributing a claim to a third-party principal. The receipt is not yet valid — the cited principal must sign consent via aps_sign_attribution_consent before checkArtifactCitations accepts it.",
-  {
-    citer: z.string().describe("DID/public key of the citing agent"),
-    citer_public_key: z.string().describe("Hex public key of citer"),
-    citer_private_key: z.string().describe("Hex private key of citer"),
-    cited_principal: z.string().describe("DID/public key of the cited principal"),
-    cited_principal_public_key: z.string().describe("Hex public key of cited principal"),
-    citation_content: z.string().describe("The quoted or paraphrased claim"),
-    binding_context: z.string().describe("ID of the binding artifact this citation is scoped to"),
-    gateway_id: z.string().optional().describe("Gateway id for timestamping (default: 'mcp')"),
-    ttl_ms: z.number().optional().describe("Receipt TTL in ms (default: 24h)"),
-  },
-  async (args) => {
-    try {
-      const gw = args.gateway_id ?? 'mcp';
-      const ttl = args.ttl_ms ?? 24 * 3600_000;
-      const created_at = createHybridTimestamp(gw);
-      const expires_at = createHybridTimestamp(gw);
-      expires_at.wallClockEarliest = created_at.wallClockEarliest + ttl;
-      expires_at.wallClockLatest = created_at.wallClockLatest + ttl;
-      const receipt = createAttributionReceipt({
-        citer: args.citer,
-        citer_public_key: args.citer_public_key,
-        citer_private_key: args.citer_private_key,
-        cited_principal: args.cited_principal,
-        cited_principal_public_key: args.cited_principal_public_key,
-        citation_content: args.citation_content,
-        binding_context: args.binding_context,
-        created_at, expires_at,
+server.registerTool("aps_create_attribution_receipt", { description: "Representation boundary: build a citer-signed AttributionReceipt attributing a claim to a third-party principal. The receipt is not yet valid — the cited principal must sign consent via aps_sign_attribution_consent before checkArtifactCitations accepts it.", inputSchema: z.object({
+        citer: z.string().describe("DID/public key of the citing agent"),
+        citer_public_key: z.string().describe("Hex public key of citer"),
+        citer_private_key: z.string().describe("Hex private key of citer"),
+        cited_principal: z.string().describe("DID/public key of the cited principal"),
+        cited_principal_public_key: z.string().describe("Hex public key of cited principal"),
+        citation_content: z.string().describe("The quoted or paraphrased claim"),
+        binding_context: z.string().describe("ID of the binding artifact this citation is scoped to"),
+        gateway_id: z.string().optional().describe("Gateway id for timestamping (default: 'mcp')"),
+        ttl_ms: z.number().optional().describe("Receipt TTL in ms (default: 24h)"),
+      }) }, async (args) => {
+        try {
+          const gw = args.gateway_id ?? 'mcp';
+          const ttl = args.ttl_ms ?? 24 * 3600_000;
+          const created_at = createHybridTimestamp(gw);
+          const expires_at = createHybridTimestamp(gw);
+          expires_at.wallClockEarliest = created_at.wallClockEarliest + ttl;
+          expires_at.wallClockLatest = created_at.wallClockLatest + ttl;
+          const receipt = createAttributionReceipt({
+            citer: args.citer,
+            citer_public_key: args.citer_public_key,
+            citer_private_key: args.citer_private_key,
+            cited_principal: args.cited_principal,
+            cited_principal_public_key: args.cited_principal_public_key,
+            citation_content: args.citation_content,
+            binding_context: args.binding_context,
+            created_at, expires_at,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(receipt, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("createAttributionReceipt failed", e) }], isError: true };
+        }
       });
-      return { content: [{ type: "text" as const, text: JSON.stringify(receipt, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("createAttributionReceipt failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "aps_sign_attribution_consent",
-  "Representation boundary: the cited principal adds their consent signature to an AttributionReceipt. Without this signature, verifyAttributionConsent and checkArtifactCitations reject the receipt.",
-  {
-    receipt: z.any().describe("AttributionReceipt JSON from aps_create_attribution_receipt"),
-    cited_principal_private_key: z.string().describe("Hex private key of cited principal"),
-  },
-  async (args) => {
-    try {
-      const signed = signAttributionConsent(args.receipt, args.cited_principal_private_key);
-      return { content: [{ type: "text" as const, text: JSON.stringify(signed, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("signAttributionConsent failed", e) }], isError: true };
-    }
-  }
-);
+server.registerTool("aps_sign_attribution_consent", { description: "Representation boundary: the cited principal adds their consent signature to an AttributionReceipt. Without this signature, verifyAttributionConsent and checkArtifactCitations reject the receipt.", inputSchema: z.object({
+        receipt: z.any().describe("AttributionReceipt JSON from aps_create_attribution_receipt"),
+        cited_principal_private_key: z.string().describe("Hex private key of cited principal"),
+      }) }, async (args) => {
+        try {
+          const signed = signAttributionConsent(args.receipt, args.cited_principal_private_key);
+          return { content: [{ type: "text" as const, text: JSON.stringify(signed, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("signAttributionConsent failed", e) }], isError: true };
+        }
+      });
 
-server.tool(
-  "aps_verify_attribution_consent",
-  "Representation boundary: verify an AttributionReceipt end-to-end (id, citer signature, consent signature, expiry). Returns {valid, reason?}.",
-  {
-    receipt: z.any().describe("AttributionReceipt JSON"),
-    now: z.any().optional().describe("Optional HybridTimestamp to pin the evaluation moment"),
-  },
-  async (args) => {
-    const result = verifyAttributionConsent(args.receipt, args.now);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-  }
-);
+server.registerTool("aps_verify_attribution_consent", { description: "Representation boundary: verify an AttributionReceipt end-to-end (id, citer signature, consent signature, expiry). Returns {valid, reason?}.", inputSchema: z.object({
+        receipt: z.any().describe("AttributionReceipt JSON"),
+        now: z.any().optional().describe("Optional HybridTimestamp to pin the evaluation moment"),
+      }) }, async (args) => {
+        const result = verifyAttributionConsent(args.receipt, args.now);
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      });
 
-server.tool(
-  "aps_check_artifact_citations",
-  "Representation boundary: gate a binding artifact's citations. Each citation must resolve to a provided, signed, unexpired receipt whose content + principal match, with per-artifact replay protection.",
-  {
-    artifact: z.any().describe("CitingArtifact with optional citations[] array"),
-    receipts: z.array(z.any()).describe("AttributionReceipts backing each citation"),
-    binding_context: z.string().optional().describe("Require receipts to be scoped to this binding context"),
-  },
-  async (args) => {
-    const opts: { binding_context?: string } = {};
-    if (args.binding_context) opts.binding_context = args.binding_context;
-    const result = checkArtifactCitations(args.artifact, args.receipts, opts);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-  }
-);
+server.registerTool("aps_check_artifact_citations", { description: "Representation boundary: gate a binding artifact's citations. Each citation must resolve to a provided, signed, unexpired receipt whose content + principal match, with per-artifact replay protection.", inputSchema: z.object({
+        artifact: z.any().describe("CitingArtifact with optional citations[] array"),
+        receipts: z.array(z.any()).describe("AttributionReceipts backing each citation"),
+        binding_context: z.string().optional().describe("Require receipts to be scoped to this binding context"),
+      }) }, async (args) => {
+        const opts: { binding_context?: string } = {};
+        if (args.binding_context) opts.binding_context = args.binding_context;
+        const result = checkArtifactCitations(args.artifact, args.receipts, opts);
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      });
 
-server.tool(
-  "aps_attribution_receipt_id",
-  "Representation boundary helper: compute the canonical sha256 id of an AttributionReceipt's unsigned core. Verifiers use this to detect id tampering.",
-  {
-    receipt: z.any().describe("AttributionReceipt JSON (signatures ignored)"),
-  },
-  async (args) => {
-    const { createHash } = await import('crypto');
-    const core = receiptCore(args.receipt);
-    const id = createHash('sha256').update(core).digest('hex');
-    return { content: [{ type: "text" as const, text: JSON.stringify({ id, core_bytes: core.length }, null, 2) }] };
-  }
-);
+server.registerTool("aps_attribution_receipt_id", { description: "Representation boundary helper: compute the canonical sha256 id of an AttributionReceipt's unsigned core. Verifiers use this to detect id tampering.", inputSchema: z.object({
+        receipt: z.any().describe("AttributionReceipt JSON (signatures ignored)"),
+      }) }, async (args) => {
+        const { createHash } = await import('crypto');
+        const core = receiptCore(args.receipt);
+        const id = createHash('sha256').update(core).digest('hex');
+        return { content: [{ type: "text" as const, text: JSON.stringify({ id, core_bytes: core.length }, null, 2) }] };
+      });
 
 // ── ProvisionalStatement (commitment boundary) ──────────────────
 
-server.tool(
-  "aps_create_provisional",
-  "Commitment boundary: emit a provisional statement for agent-to-agent negotiation. Default is non-binding until a PromotionEvent satisfies a PromotionPolicy. Dead-man expiry auto-withdraws.",
-  {
-    author: z.string().describe("AgentDID/public key of the emitting agent"),
-    author_principal: z.string().describe("PrincipalDID behind the author"),
-    content: z.string().describe("Statement content (offer, position, claim)"),
-    author_private_key: z.string().describe("Hex private key of author for signing"),
-    gateway_id: z.string().optional().describe("Gateway id for timestamping (default: 'mcp')"),
-    dead_man_ms: z.number().optional().describe("Dead-man expiry relative to now (ms). If elapsed without promotion/withdrawal, statement auto-withdraws."),
-  },
-  async (args) => {
-    try {
-      const gw = args.gateway_id ?? 'mcp';
-      let dead_man_expires_at;
-      if (typeof args.dead_man_ms === 'number') {
-        const dm = createHybridTimestamp(gw);
-        dm.wallClockEarliest += args.dead_man_ms;
-        dm.wallClockLatest += args.dead_man_ms;
-        dead_man_expires_at = dm;
-      }
-      const statement = createProvisional({
-        author: args.author,
-        author_principal: args.author_principal,
-        content: args.content,
-        authorPrivateKey: args.author_private_key,
-        gatewayId: gw,
-        ...(dead_man_expires_at ? { dead_man_expires_at } : {}),
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify(statement, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("createProvisional failed", e) }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "aps_promote_statement",
-  "Commitment boundary: promote a provisional statement to binding by attaching a PromotionEvent that satisfies the PromotionPolicy (m-of-n principal signatures). dead_man_elapsed cannot promote — it auto-withdraws via the dead-man path.",
-  {
-    statement: z.any().describe("ProvisionalStatement from aps_create_provisional"),
-    promotion_event: z.any().describe("PromotionEvent with kind, promoted_at, promoter, promoter_signature, policy_reference"),
-    policy: z.any().describe("PromotionPolicy {id, required_signers, threshold, max_time_to_promote}"),
-  },
-  async (args) => {
-    try {
-      const promoted = promoteStatement(args.statement, args.promotion_event, args.policy);
-      return { content: [{ type: "text" as const, text: JSON.stringify({ promoted, is_binding: isBinding(promoted) }, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("promoteStatement failed", e) }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "aps_verify_promotion",
-  "Commitment boundary: verify that a promoted statement's PromotionEvent cryptographically satisfies the PromotionPolicy (policy_reference match, promoter in required_signers, threshold, signature, max_time_to_promote, author-signature tamper check).",
-  {
-    statement: z.any().describe("Promoted ProvisionalStatement"),
-    policy: z.any().describe("PromotionPolicy to check against"),
-  },
-  async (args) => {
-    const result = verifyPromotion(args.statement, args.policy);
-    return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-  }
-);
-
-server.tool(
-  "aps_withdraw_provisional",
-  "Commitment boundary: author withdraws their own provisional statement. Already-promoted statements cannot be withdrawn. Caller must supply the author's signature over the withdrawal payload (canonicalize({action:'withdraw', statement_id})).",
-  {
-    statement: z.any().describe("ProvisionalStatement to withdraw"),
-    author_signature: z.string().optional().describe("Hex Ed25519 signature. If omitted, provide author_private_key and the tool will sign for you."),
-    author_private_key: z.string().optional().describe("If provided, tool signs the withdrawal payload with this key."),
-  },
-  async (args) => {
-    try {
-      let sig = args.author_signature;
-      if (!sig) {
-        if (!args.author_private_key) {
-          throw new Error('Supply author_signature or author_private_key');
+server.registerTool("aps_create_provisional", { description: "Commitment boundary: emit a provisional statement for agent-to-agent negotiation. Default is non-binding until a PromotionEvent satisfies a PromotionPolicy. Dead-man expiry auto-withdraws.", inputSchema: z.object({
+        author: z.string().describe("AgentDID/public key of the emitting agent"),
+        author_principal: z.string().describe("PrincipalDID behind the author"),
+        content: z.string().describe("Statement content (offer, position, claim)"),
+        author_private_key: z.string().describe("Hex private key of author for signing"),
+        gateway_id: z.string().optional().describe("Gateway id for timestamping (default: 'mcp')"),
+        dead_man_ms: z.number().optional().describe("Dead-man expiry relative to now (ms). If elapsed without promotion/withdrawal, statement auto-withdraws."),
+      }) }, async (args) => {
+        try {
+          const gw = args.gateway_id ?? 'mcp';
+          let dead_man_expires_at;
+          if (typeof args.dead_man_ms === 'number') {
+            const dm = createHybridTimestamp(gw);
+            dm.wallClockEarliest += args.dead_man_ms;
+            dm.wallClockLatest += args.dead_man_ms;
+            dead_man_expires_at = dm;
+          }
+          const statement = createProvisional({
+            author: args.author,
+            author_principal: args.author_principal,
+            content: args.content,
+            authorPrivateKey: args.author_private_key,
+            gatewayId: gw,
+            ...(dead_man_expires_at ? { dead_man_expires_at } : {}),
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(statement, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("createProvisional failed", e) }], isError: true };
         }
-        const { sign } = await import('agent-passport-system');
-        sig = sign(withdrawalPayload(args.statement.id), args.author_private_key);
-      }
-      const withdrawn = withdrawProvisional(args.statement, sig);
-      return { content: [{ type: "text" as const, text: JSON.stringify(withdrawn, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("withdrawProvisional failed", e) }], isError: true };
-    }
-  }
-);
+      });
+
+server.registerTool("aps_promote_statement", { description: "Commitment boundary: promote a provisional statement to binding by attaching a PromotionEvent that satisfies the PromotionPolicy (m-of-n principal signatures). dead_man_elapsed cannot promote — it auto-withdraws via the dead-man path.", inputSchema: z.object({
+        statement: z.any().describe("ProvisionalStatement from aps_create_provisional"),
+        promotion_event: z.any().describe("PromotionEvent with kind, promoted_at, promoter, promoter_signature, policy_reference"),
+        policy: z.any().describe("PromotionPolicy {id, required_signers, threshold, max_time_to_promote}"),
+      }) }, async (args) => {
+        try {
+          const promoted = promoteStatement(args.statement, args.promotion_event, args.policy);
+          return { content: [{ type: "text" as const, text: JSON.stringify({ promoted, is_binding: isBinding(promoted) }, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("promoteStatement failed", e) }], isError: true };
+        }
+      });
+
+server.registerTool("aps_verify_promotion", { description: "Commitment boundary: verify that a promoted statement's PromotionEvent cryptographically satisfies the PromotionPolicy (policy_reference match, promoter in required_signers, threshold, signature, max_time_to_promote, author-signature tamper check).", inputSchema: z.object({
+        statement: z.any().describe("Promoted ProvisionalStatement"),
+        policy: z.any().describe("PromotionPolicy to check against"),
+      }) }, async (args) => {
+        const result = verifyPromotion(args.statement, args.policy);
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      });
+
+server.registerTool("aps_withdraw_provisional", { description: "Commitment boundary: author withdraws their own provisional statement. Already-promoted statements cannot be withdrawn. Caller must supply the author's signature over the withdrawal payload (canonicalize({action:'withdraw', statement_id})).", inputSchema: z.object({
+        statement: z.any().describe("ProvisionalStatement to withdraw"),
+        author_signature: z.string().optional().describe("Hex Ed25519 signature. If omitted, provide author_private_key and the tool will sign for you."),
+        author_private_key: z.string().optional().describe("If provided, tool signs the withdrawal payload with this key."),
+      }) }, async (args) => {
+        try {
+          let sig = args.author_signature;
+          if (!sig) {
+            if (!args.author_private_key) {
+              throw new Error('Supply author_signature or author_private_key');
+            }
+            const { sign } = await import('agent-passport-system');
+            sig = sign(withdrawalPayload(args.statement.id), args.author_private_key);
+          }
+          const withdrawn = withdrawProvisional(args.statement, sig);
+          return { content: [{ type: "text" as const, text: JSON.stringify(withdrawn, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("withdrawProvisional failed", e) }], isError: true };
+        }
+      });
 
 // ── HumanEscalationFlag (escalation boundary) ───────────────────
 
-server.tool(
-  "aps_check_escalation_required",
-  "Escalation boundary: check whether an action on a v2 delegation requires owner confirmation before execution. Returns {required, requirement?, reason?}. Use aps_record_owner_confirmation to clear the flag when required.",
-  {
-    delegation: z.any().describe("V2Delegation with optional scope.escalation_requirements"),
-    action_class: z.string().describe("Action class (e.g. 'org_creation', 'spend_above_threshold')"),
-    action_details: z.any().optional().describe("Structured details; hashed for audit"),
-    session_id: z.string().optional().describe("Session id (required for per_session scope)"),
-  },
-  async (args) => {
-    const check = checkEscalationRequired(args.delegation, {
-      action_class: args.action_class,
-      action_details: args.action_details ?? {},
-      session_id: args.session_id ?? null,
-    });
-    return { content: [{ type: "text" as const, text: JSON.stringify(check, null, 2) }] };
-  }
-);
+server.registerTool("aps_check_escalation_required", { description: "Escalation boundary: check whether an action on a v2 delegation requires owner confirmation before execution. Returns {required, requirement?, reason?}. Use aps_record_owner_confirmation to clear the flag when required.", inputSchema: z.object({
+        delegation: z.any().describe("V2Delegation with optional scope.escalation_requirements"),
+        action_class: z.string().describe("Action class (e.g. 'org_creation', 'spend_above_threshold')"),
+        action_details: z.any().optional().describe("Structured details; hashed for audit"),
+        session_id: z.string().optional().describe("Session id (required for per_session scope)"),
+      }) }, async (args) => {
+        const check = checkEscalationRequired(args.delegation, {
+          action_class: args.action_class,
+          action_details: args.action_details ?? {},
+          session_id: args.session_id ?? null,
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify(check, null, 2) }] };
+      });
 
-server.tool(
-  "aps_record_owner_confirmation",
-  "Escalation boundary: owner signs an OwnerConfirmation authorizing a flagged action. Builds the ConfirmationRequest and signs it in a single call. The confirmation is bound to action_details via hash and scoped (per_action / per_session / time_window).",
-  {
-    delegation: z.any().describe("V2Delegation with escalation_requirements for this action class"),
-    action_class: z.string().describe("Action class being confirmed"),
-    action_details: z.any().describe("Structured action details — hashed and bound to the confirmation"),
-    session_id: z.string().optional().describe("Session id (required for per_session scope)"),
-    owner_private_key: z.string().describe("Hex private key of the delegation's owner (delegator)"),
-  },
-  async (args) => {
-    try {
-      const request = requestOwnerConfirmation(args.delegation, {
-        action_class: args.action_class,
-        action_details: args.action_details ?? {},
-        session_id: args.session_id ?? null,
+server.registerTool("aps_record_owner_confirmation", { description: "Escalation boundary: owner signs an OwnerConfirmation authorizing a flagged action. Builds the ConfirmationRequest and signs it in a single call. The confirmation is bound to action_details via hash and scoped (per_action / per_session / time_window).", inputSchema: z.object({
+        delegation: z.any().describe("V2Delegation with escalation_requirements for this action class"),
+        action_class: z.string().describe("Action class being confirmed"),
+        action_details: z.any().describe("Structured action details — hashed and bound to the confirmation"),
+        session_id: z.string().optional().describe("Session id (required for per_session scope)"),
+        owner_private_key: z.string().describe("Hex private key of the delegation's owner (delegator)"),
+      }) }, async (args) => {
+        try {
+          const request = requestOwnerConfirmation(args.delegation, {
+            action_class: args.action_class,
+            action_details: args.action_details ?? {},
+            session_id: args.session_id ?? null,
+          });
+          const confirmation = recordOwnerConfirmation({
+            request,
+            delegation: args.delegation,
+            owner_private_key: args.owner_private_key,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify({ request, confirmation }, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("recordOwnerConfirmation failed", e) }], isError: true };
+        }
       });
-      const confirmation = recordOwnerConfirmation({
-        request,
-        delegation: args.delegation,
-        owner_private_key: args.owner_private_key,
-      });
-      return { content: [{ type: "text" as const, text: JSON.stringify({ request, confirmation }, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("recordOwnerConfirmation failed", e) }], isError: true };
-    }
-  }
-);
 
 // ═══════════════════════════════════════
 // Attribution Primitive — unified four-axis signed Merkle receipt
@@ -5370,133 +4719,103 @@ server.tool(
 // four axis projections (D, P, G, C) that verify independently.
 // ═══════════════════════════════════════
 
-server.tool(
-  "aps_construct_attribution_primitive",
-  "Build and sign a four-axis AttributionPrimitive for an action. Axes: D (data sources), P (protocol modules), G (delegation chain), C (compute providers). Returns the complete signed object.",
-  {
-    action: z.object({
-      agentId: z.string(),
-      actionType: z.string(),
-      params: z.record(z.any()),
-      nonce: z.string(),
-    }).describe("Action identity tuple; the action_ref is derived as sha256(canonical(this))"),
-    axes: z.object({
-      D: z.array(z.any()),
-      P: z.array(z.any()),
-      G: z.array(z.any()),
-      C: z.array(z.any()),
-    }).describe("Four-axis content. See spec §1.2 for entry shapes per axis."),
-    issuer: z.string().describe("Issuer DID (gateway or agent producing the receipt)"),
-    issuer_private_key: z.string().describe("Ed25519 private key hex that signs the envelope"),
-    timestamp: z.string().optional().describe("ISO-8601 UTC with ms precision + Z (§2.5). Defaults to now()."),
-  },
-  async (args) => {
-    try {
-      const primitive = constructAttributionPrimitive({
-        action: args.action,
-        axes: args.axes as any,
-        issuer: args.issuer,
-        issuerPrivateKey: args.issuer_private_key,
-        timestamp: args.timestamp,
+server.registerTool("aps_construct_attribution_primitive", { description: "Build and sign a four-axis AttributionPrimitive for an action. Axes: D (data sources), P (protocol modules), G (delegation chain), C (compute providers). Returns the complete signed object.", inputSchema: z.object({
+        action: z.object({
+          agentId: z.string(),
+          actionType: z.string(),
+          params: z.record(z.string(), z.any()),
+          nonce: z.string(),
+        }).describe("Action identity tuple; the action_ref is derived as sha256(canonical(this))"),
+        axes: z.object({
+          D: z.array(z.any()),
+          P: z.array(z.any()),
+          G: z.array(z.any()),
+          C: z.array(z.any()),
+        }).describe("Four-axis content. See spec §1.2 for entry shapes per axis."),
+        issuer: z.string().describe("Issuer DID (gateway or agent producing the receipt)"),
+        issuer_private_key: z.string().describe("Ed25519 private key hex that signs the envelope"),
+        timestamp: z.string().optional().describe("ISO-8601 UTC with ms precision + Z (§2.5). Defaults to now()."),
+      }) }, async (args) => {
+        try {
+          const primitive = constructAttributionPrimitive({
+            action: args.action,
+            axes: args.axes as any,
+            issuer: args.issuer,
+            issuerPrivateKey: args.issuer_private_key,
+            timestamp: args.timestamp,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(primitive, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("constructAttributionPrimitive failed", e) }], isError: true };
+        }
       });
-      return { content: [{ type: "text" as const, text: JSON.stringify(primitive, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("constructAttributionPrimitive failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "aps_project_attribution",
-  "Extract a single-axis projection from an AttributionPrimitive. The projection carries the axis content plus a two-hop Merkle path that lets a downstream verifier reconstruct the signed root without seeing the other three axes. axis: 'D' | 'P' | 'G' | 'C'.",
-  {
-    primitive: z.any().describe("An AttributionPrimitive (from aps_construct_attribution_primitive)"),
-    axis: z.enum(["D", "P", "G", "C"]).describe("Axis to project"),
-  },
-  async (args) => {
-    try {
-      const projection = projectAttribution(args.primitive, args.axis);
-      return { content: [{ type: "text" as const, text: JSON.stringify(projection, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("projectAttribution failed", e) }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "aps_verify_attribution_projection",
-  "Verify a single-axis AttributionProjection under the issuer's Ed25519 public key. Returns {valid: true} or {valid: false, reason: 'INVALID_AXIS_TAG'|'MERKLE_MISMATCH'|'SIGNATURE_INVALID'|'MALFORMED'}. Verification is purely local — no other axes required.",
-  {
-    projection: z.any().describe("An AttributionProjection (from aps_project_attribution)"),
-    issuer_public_key: z.string().describe("Issuer Ed25519 public key hex"),
-  },
-  async (args) => {
-    try {
-      const result = verifyAttributionProjection(args.projection, args.issuer_public_key);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("verifyAttributionProjection failed", e) }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "aps_verify_attribution_primitive",
-  "End-to-end verify of a full AttributionPrimitive: constructs projections for all four axes and verifies each one. Useful as a post-construction sanity check or for verifying a primitive received from a peer.",
-  {
-    primitive: z.any().describe("An AttributionPrimitive"),
-    issuer_public_key: z.string().describe("Issuer Ed25519 public key hex"),
-  },
-  async (args) => {
-    try {
-      const result = verifyAttributionPrimitive(args.primitive, args.issuer_public_key);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("verifyAttributionPrimitive failed", e) }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "aps_check_projection_consistency",
-  "Cross-projection consistency check (§2.4): given two projections, confirm they originate from the same signed receipt. Returns {same_receipt: true} or {same_receipt: false, reason: 'DIFFERENT_ACTIONS'|'DIFFERENT_RECEIPTS'|'DIFFERENT_SIGNATURES'|'METADATA_MISMATCH'}.",
-  {
-    projection_a: z.any().describe("First AttributionProjection"),
-    projection_b: z.any().describe("Second AttributionProjection"),
-  },
-  async (args) => {
-    try {
-      const result = checkProjectionConsistency(args.projection_a, args.projection_b);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("checkProjectionConsistency failed", e) }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "aps_compute_attribution_action_ref",
-  "Derive the action_ref (hex sha256) for an action tuple. action_ref is the content-addressed anchor that all four axis projections bind to. Useful for indexing primitives by action without constructing the full primitive.",
-  {
-    agentId: z.string(),
-    actionType: z.string(),
-    params: z.record(z.any()),
-    nonce: z.string(),
-  },
-  async (args) => {
-    try {
-      const action_ref = computeAttributionActionRef({
-        agentId: args.agentId,
-        actionType: args.actionType,
-        params: args.params,
-        nonce: args.nonce,
+server.registerTool("aps_project_attribution", { description: "Extract a single-axis projection from an AttributionPrimitive. The projection carries the axis content plus a two-hop Merkle path that lets a downstream verifier reconstruct the signed root without seeing the other three axes. axis: 'D' | 'P' | 'G' | 'C'.", inputSchema: z.object({
+        primitive: z.any().describe("An AttributionPrimitive (from aps_construct_attribution_primitive)"),
+        axis: z.enum(["D", "P", "G", "C"]).describe("Axis to project"),
+      }) }, async (args) => {
+        try {
+          const projection = projectAttribution(args.primitive, args.axis);
+          return { content: [{ type: "text" as const, text: JSON.stringify(projection, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("projectAttribution failed", e) }], isError: true };
+        }
       });
-      return { content: [{ type: "text" as const, text: JSON.stringify({ action_ref }, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("computeAttributionActionRef failed", e) }], isError: true };
-    }
-  }
-);
+
+server.registerTool("aps_verify_attribution_projection", { description: "Verify a single-axis AttributionProjection under the issuer's Ed25519 public key. Returns {valid: true} or {valid: false, reason: 'INVALID_AXIS_TAG'|'MERKLE_MISMATCH'|'SIGNATURE_INVALID'|'MALFORMED'}. Verification is purely local — no other axes required.", inputSchema: z.object({
+        projection: z.any().describe("An AttributionProjection (from aps_project_attribution)"),
+        issuer_public_key: z.string().describe("Issuer Ed25519 public key hex"),
+      }) }, async (args) => {
+        try {
+          const result = verifyAttributionProjection(args.projection, args.issuer_public_key);
+          return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("verifyAttributionProjection failed", e) }], isError: true };
+        }
+      });
+
+server.registerTool("aps_verify_attribution_primitive", { description: "End-to-end verify of a full AttributionPrimitive: constructs projections for all four axes and verifies each one. Useful as a post-construction sanity check or for verifying a primitive received from a peer.", inputSchema: z.object({
+        primitive: z.any().describe("An AttributionPrimitive"),
+        issuer_public_key: z.string().describe("Issuer Ed25519 public key hex"),
+      }) }, async (args) => {
+        try {
+          const result = verifyAttributionPrimitive(args.primitive, args.issuer_public_key);
+          return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("verifyAttributionPrimitive failed", e) }], isError: true };
+        }
+      });
+
+server.registerTool("aps_check_projection_consistency", { description: "Cross-projection consistency check (§2.4): given two projections, confirm they originate from the same signed receipt. Returns {same_receipt: true} or {same_receipt: false, reason: 'DIFFERENT_ACTIONS'|'DIFFERENT_RECEIPTS'|'DIFFERENT_SIGNATURES'|'METADATA_MISMATCH'}.", inputSchema: z.object({
+        projection_a: z.any().describe("First AttributionProjection"),
+        projection_b: z.any().describe("Second AttributionProjection"),
+      }) }, async (args) => {
+        try {
+          const result = checkProjectionConsistency(args.projection_a, args.projection_b);
+          return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("checkProjectionConsistency failed", e) }], isError: true };
+        }
+      });
+
+server.registerTool("aps_compute_attribution_action_ref", { description: "Derive the action_ref (hex sha256) for an action tuple. action_ref is the content-addressed anchor that all four axis projections bind to. Useful for indexing primitives by action without constructing the full primitive.", inputSchema: z.object({
+        agentId: z.string(),
+        actionType: z.string(),
+        params: z.record(z.string(), z.any()),
+        nonce: z.string(),
+      }) }, async (args) => {
+        try {
+          const action_ref = computeAttributionActionRef({
+            agentId: args.agentId,
+            actionType: args.actionType,
+            params: args.params,
+            nonce: args.nonce,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify({ action_ref }, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("computeAttributionActionRef failed", e) }], isError: true };
+        }
+      });
 
 // ═══════════════════════════════════════
 // Attribution Weights — Build B fractional weight formulas
@@ -5505,56 +4824,46 @@ server.tool(
 // then hand the resulting axis entries to aps_construct_attribution_primitive.
 // ═══════════════════════════════════════
 
-server.tool(
-  "aps_compute_data_axis_weights",
-  "Compute the D-axis fractional weight vector from a list of AccessReceipt records with role, timestamp, and content length. Returns canonical DataAxisEntry[] with 6-digit decimal contribution_weight strings that sum to ~1.0 and feed directly into aps_construct_attribution_primitive. Empty input → empty array; all-zero raw weights → error. Weights = role × recency_decay × length_weight, normalized per spec BUILD-B §'The D-axis formula'. Parameter names match the SDK: `sources`, `action_timestamp`, optional `profile`.",
-  {
-    sources: z.array(z.object({
-      source_did: z.string(),
-      access_receipt_hash: z.string(),
-      role: z.enum([
-        'primary_source', 'supporting_evidence', 'context_only', 'background_retrieval',
-      ]),
-      timestamp: z.string().describe("ISO-8601 UTC with millisecond precision + Z (t_source)"),
-      content_length: z.number().nonnegative().describe("Tokens"),
-    })).describe("Per-source records with retrieval metadata"),
-    action_timestamp: z.string().describe("ISO-8601 UTC ms when the action ran (t_action)"),
-    profile: z.any().optional().describe("Optional WeightProfile override; defaults to DEFAULT_WEIGHT_PROFILE"),
-  },
-  async (args) => {
-    try {
-      const entries = computeDataAxisWeights(args.sources, {
-        action_timestamp: args.action_timestamp,
-        profile: args.profile,
+server.registerTool("aps_compute_data_axis_weights", { description: "Compute the D-axis fractional weight vector from a list of AccessReceipt records with role, timestamp, and content length. Returns canonical DataAxisEntry[] with 6-digit decimal contribution_weight strings that sum to ~1.0 and feed directly into aps_construct_attribution_primitive. Empty input → empty array; all-zero raw weights → error. Weights = role × recency_decay × length_weight, normalized per spec BUILD-B §'The D-axis formula'. Parameter names match the SDK: `sources`, `action_timestamp`, optional `profile`.", inputSchema: z.object({
+        sources: z.array(z.object({
+          source_did: z.string(),
+          access_receipt_hash: z.string(),
+          role: z.enum([
+            'primary_source', 'supporting_evidence', 'context_only', 'background_retrieval',
+          ]),
+          timestamp: z.string().describe("ISO-8601 UTC with millisecond precision + Z (t_source)"),
+          content_length: z.number().nonnegative().describe("Tokens"),
+        })).describe("Per-source records with retrieval metadata"),
+        action_timestamp: z.string().describe("ISO-8601 UTC ms when the action ran (t_action)"),
+        profile: z.any().optional().describe("Optional WeightProfile override; defaults to DEFAULT_WEIGHT_PROFILE"),
+      }) }, async (args) => {
+        try {
+          const entries = computeDataAxisWeights(args.sources, {
+            action_timestamp: args.action_timestamp,
+            profile: args.profile,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("computeDataAxisWeights failed", e) }], isError: true };
+        }
       });
-      return { content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("computeDataAxisWeights failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "aps_compute_compute_axis_weights",
-  "Compute the C-axis fractional weight vector from a list of inference billing records (prompt_tokens, completion_tokens). Returns canonical ComputeAxisEntry[] with 6-digit decimal compute_share strings that sum to ~1.0 and feed directly into aps_construct_attribution_primitive. Weights = prompt_tokens + completion_tokens × COMPLETION_MULTIPLIER (default 3.0), normalized per spec BUILD-B §'The C-axis formula'. Parameter names match the SDK: `providers`, optional `profile`.",
-  {
-    providers: z.array(z.object({
-      provider_did: z.string(),
-      hardware_attestation_hash: z.string(),
-      prompt_tokens: z.number().nonnegative(),
-      completion_tokens: z.number().nonnegative(),
-    })).describe("Per-provider billing records"),
-    profile: z.any().optional().describe("Optional WeightProfile override; defaults to DEFAULT_WEIGHT_PROFILE"),
-  },
-  async (args) => {
-    try {
-      const entries = computeComputeAxisWeights(args.providers, { profile: args.profile });
-      return { content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("computeComputeAxisWeights failed", e) }], isError: true };
-    }
-  }
-);
+server.registerTool("aps_compute_compute_axis_weights", { description: "Compute the C-axis fractional weight vector from a list of inference billing records (prompt_tokens, completion_tokens). Returns canonical ComputeAxisEntry[] with 6-digit decimal compute_share strings that sum to ~1.0 and feed directly into aps_construct_attribution_primitive. Weights = prompt_tokens + completion_tokens × COMPLETION_MULTIPLIER (default 3.0), normalized per spec BUILD-B §'The C-axis formula'. Parameter names match the SDK: `providers`, optional `profile`.", inputSchema: z.object({
+        providers: z.array(z.object({
+          provider_did: z.string(),
+          hardware_attestation_hash: z.string(),
+          prompt_tokens: z.number().nonnegative(),
+          completion_tokens: z.number().nonnegative(),
+        })).describe("Per-provider billing records"),
+        profile: z.any().optional().describe("Optional WeightProfile override; defaults to DEFAULT_WEIGHT_PROFILE"),
+      }) }, async (args) => {
+        try {
+          const entries = computeComputeAxisWeights(args.providers, { profile: args.profile });
+          return { content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("computeComputeAxisWeights failed", e) }], isError: true };
+        }
+      });
 
 // Keep DEFAULT_WEIGHT_PROFILE referenced so tree-shakers don't drop it
 // from the compiled bundle — consumers of the two tools above will want
@@ -5575,208 +4884,173 @@ const SettlementPeriodSchema = z.object({
   period_id: z.string().describe("Gateway-scoped period identifier"),
 });
 
-server.tool(
-  "aps_aggregate_settlement",
-  "Aggregate a batch of Attribution Primitives over a half-open settlement period [t0, t1) into a signed SettlementRecord. Each axis (D, P, G, C) produces a per-contributor total with a balanced-Merkle commitment. Residual buckets pool sub-threshold contributors per Build A §4.1. Output is a fully signed record ready for third-party verification. Spec: BUILD-C-SETTLEMENT-PIPELINE.md.",
-  {
-    receipts: z.array(z.any()).describe("Array of AttributionPrimitives to aggregate"),
-    period: SettlementPeriodSchema,
-    gateway_did: z.string().describe("Gateway DID that signs the record"),
-    gateway_private_key: z.string().describe("Ed25519 gateway private key (hex)"),
-    issued_at: z.string().optional().describe("Override issued_at (canonical ISO-8601 UTC ms + Z); defaults to now"),
-  },
-  async (args) => {
-    try {
-      const unsigned = aggregateAttributionPrimitives(args.receipts, args.period, {
-        gateway_did: args.gateway_did,
-        issued_at: args.issued_at,
+server.registerTool("aps_aggregate_settlement", { description: "Aggregate a batch of Attribution Primitives over a half-open settlement period [t0, t1) into a signed SettlementRecord. Each axis (D, P, G, C) produces a per-contributor total with a balanced-Merkle commitment. Residual buckets pool sub-threshold contributors per Build A §4.1. Output is a fully signed record ready for third-party verification. Spec: BUILD-C-SETTLEMENT-PIPELINE.md.", inputSchema: z.object({
+        receipts: z.array(z.any()).describe("Array of AttributionPrimitives to aggregate"),
+        period: SettlementPeriodSchema,
+        gateway_did: z.string().describe("Gateway DID that signs the record"),
+        gateway_private_key: z.string().describe("Ed25519 gateway private key (hex)"),
+        issued_at: z.string().optional().describe("Override issued_at (canonical ISO-8601 UTC ms + Z); defaults to now"),
+      }) }, async (args) => {
+        try {
+          const unsigned = aggregateAttributionPrimitives(args.receipts, args.period, {
+            gateway_did: args.gateway_did,
+            issued_at: args.issued_at,
+          });
+          const signature = signSettlementRecord(unsigned, args.gateway_private_key);
+          const record = { ...unsigned, signature };
+          return { content: [{ type: "text" as const, text: JSON.stringify(record, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("aggregateSettlement failed", e) }], isError: true };
+        }
       });
-      const signature = signSettlementRecord(unsigned, args.gateway_private_key);
-      const record = { ...unsigned, signature };
-      return { content: [{ type: "text" as const, text: JSON.stringify(record, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("aggregateSettlement failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "aps_verify_settlement",
-  "Verify a signed SettlementRecord under S1-S5 (signature, Merkle roots, conservation, residual shape, optional input-receipts cross-check). S3 conservation is the strongest invariant: a gateway cannot inflate or suppress any contributor's share without breaking it. Returns {valid: true} or {valid: false, reason, detail}. Pass inputReceipts to also recompute input_receipts_hash.",
-  {
-    record: z.any().describe("A signed SettlementRecord"),
-    gateway_public_key: z.string().describe("Gateway Ed25519 public key hex"),
-    input_receipts: z.array(z.any()).optional().describe("Optional — the input Attribution Primitives that fed the settlement. When supplied, S5 cross-checks input_receipts_hash and verifies each receipt individually."),
-  },
-  async (args) => {
-    try {
-      const result = verifySettlementRecord(args.record, {
-        gatewayPublicKeyHex: args.gateway_public_key,
-        inputReceipts: args.input_receipts,
+server.registerTool("aps_verify_settlement", { description: "Verify a signed SettlementRecord under S1-S5 (signature, Merkle roots, conservation, residual shape, optional input-receipts cross-check). S3 conservation is the strongest invariant: a gateway cannot inflate or suppress any contributor's share without breaking it. Returns {valid: true} or {valid: false, reason, detail}. Pass inputReceipts to also recompute input_receipts_hash.", inputSchema: z.object({
+        record: z.any().describe("A signed SettlementRecord"),
+        gateway_public_key: z.string().describe("Gateway Ed25519 public key hex"),
+        input_receipts: z.array(z.any()).optional().describe("Optional — the input Attribution Primitives that fed the settlement. When supplied, S5 cross-checks input_receipts_hash and verifies each receipt individually."),
+      }) }, async (args) => {
+        try {
+          const result = verifySettlementRecord(args.record, {
+            gatewayPublicKeyHex: args.gateway_public_key,
+            inputReceipts: args.input_receipts,
+          });
+          return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("verifySettlement failed", e) }], isError: true };
+        }
       });
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("verifySettlement failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "aps_build_contributor_query",
-  "Build a contributor-query response: given a signed SettlementRecord and a contributor DID, return per-axis (total_weight, contribution_count, merkle_path, axis_root) plus the full signed record so a third party can verify the contributor's share end-to-end without trusting the gateway beyond its public key. Returns null if the contributor has no share in the period.",
-  {
-    record: z.any().describe("A signed SettlementRecord"),
-    contributor_did: z.string().describe("Contributor DID (data source, compute provider, governance signer, or protocol module identifier)"),
-    gateway_jwks: z.string().optional().describe("Advisory JWKS URL; not part of the signed material"),
-  },
-  async (args) => {
-    try {
-      const response = buildContributorQueryResponse(args.record, args.contributor_did, {
-        gateway_jwks: args.gateway_jwks,
+server.registerTool("aps_build_contributor_query", { description: "Build a contributor-query response: given a signed SettlementRecord and a contributor DID, return per-axis (total_weight, contribution_count, merkle_path, axis_root) plus the full signed record so a third party can verify the contributor's share end-to-end without trusting the gateway beyond its public key. Returns null if the contributor has no share in the period.", inputSchema: z.object({
+        record: z.any().describe("A signed SettlementRecord"),
+        contributor_did: z.string().describe("Contributor DID (data source, compute provider, governance signer, or protocol module identifier)"),
+        gateway_jwks: z.string().optional().describe("Advisory JWKS URL; not part of the signed material"),
+      }) }, async (args) => {
+        try {
+          const response = buildContributorQueryResponse(args.record, args.contributor_did, {
+            gateway_jwks: args.gateway_jwks,
+          });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(response, null, 2) }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("buildContributorQuery failed", e) }], isError: true };
+        }
       });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(response, null, 2) }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("buildContributorQuery failed", e) }], isError: true };
-    }
-  }
-);
 
 // ═══════════════════════════════════════
 // Mutual Authentication v1 tools (SDK v2.2.0)
 // ═══════════════════════════════════════
 
-server.tool(
-  "mutualAuthBuildCertificate",
-  "Build and sign a mutual-auth certificate identifying an agent or information system. Returns the signed MutualAuthCertificate object ready to carry into a handshake. The issuer's Ed25519 private key (hex) signs over the canonical (JCS) form.",
-  {
-    role: z.enum(["agent", "information_system"]).describe("Role of the subject this cert identifies"),
-    subject_id: z.string().describe("Stable subject identifier (e.g., agent DID, IS endpoint URL)"),
-    subject_pubkey_hex: z.string().describe("Ed25519 public key (hex) of the subject"),
-    issuer_id: z.string().describe("Issuer identifier"),
-    issuer_role: z.enum(["agent", "information_system", "trust_anchor"]).describe("Role of the issuer"),
-    issuer_pubkey_hex: z.string().describe("Ed25519 public key (hex) of the issuer"),
-    issuer_privkey_hex: z.string().describe("Ed25519 private key (hex) of the issuer — used to sign"),
-    binding: z.string().describe("For an agent: the APS agent_id. For an IS: the resource domain (e.g., mcp://api.bank.com)"),
-    not_before: z.number().describe("Earliest valid time (unix ms)"),
-    not_after: z.number().describe("Latest valid time (unix ms)"),
-    supported_versions: z.array(z.string()).describe("Protocol versions supported, highest first (e.g., ['1.0'])"),
-    attestation_grade: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional().describe("For agents: APS attestation grade 0-3"),
-    capabilities: z.array(z.string()).optional().describe("Optional capability tags"),
-  },
-  async (args) => {
-    try {
-      const unsigned = buildCertificate(
-        {
-          role: args.role,
-          subject_id: args.subject_id,
-          subject_pubkey_hex: args.subject_pubkey_hex,
-          issuer_id: args.issuer_id,
-          issuer_role: args.issuer_role,
-          binding: args.binding,
-          not_before: args.not_before,
-          not_after: args.not_after,
-          supported_versions: args.supported_versions,
-          attestation_grade: args.attestation_grade,
-          capabilities: args.capabilities,
-        },
-        args.issuer_pubkey_hex,
-      );
-      const cert = signCertificate(unsigned, args.issuer_privkey_hex);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify({
-          certificate: cert,
-          certificate_id: certificateId(cert),
-        }, null, 2) }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("mutualAuthBuildCertificate failed", e) }], isError: true };
-    }
-  }
-);
-
-server.tool(
-  "mutualAuthVerifyAttest",
-  "Verify a MutualAuthAttest against policy and trust anchors. Runs all 10 verification checks: signature, version negotiation, nonce match, timestamp freshness, certificate validity, issuer anchor check, binding constraints, downgrade detection, attestation grade policy, capability policy. Returns ok:true on success or a failure reason on rejection.",
-  {
-    attest: z.any().describe("MutualAuthAttest to verify"),
-    expected_peer_nonce_b64: z.string().describe("The nonce the peer sent in their prior hello or attest"),
-    expected_own_nonce_b64: z.string().describe("The nonce we sent in our own prior hello or attest"),
-    policy: z.any().describe("MutualAuthPolicy (accepted_versions, min_agent_grade, required_capabilities, max_clock_skew_ms, max_session_ms)"),
-    trust_anchors: z.array(z.any()).describe("TrustAnchor[] — local trusted roots"),
-    revoked_anchor_ids: z.array(z.string()).optional().describe("IDs of anchors revoked since the bundle was issued"),
-    now_ms: z.number().optional().describe("Current unix ms — defaults to Date.now()"),
-  },
-  async (args) => {
-    try {
-      const res = verifyAttest({
-        attest: args.attest as MutualAuthAttest,
-        expected_peer_nonce_b64: args.expected_peer_nonce_b64,
-        expected_own_nonce_b64: args.expected_own_nonce_b64,
-        policy: args.policy as MutualAuthPolicy,
-        trust_anchors: args.trust_anchors as TrustAnchor[],
-        revoked_anchor_ids: args.revoked_anchor_ids,
-        now_ms: args.now_ms ?? Date.now(),
+server.registerTool("mutualAuthBuildCertificate", { description: "Build and sign a mutual-auth certificate identifying an agent or information system. Returns the signed MutualAuthCertificate object ready to carry into a handshake. The issuer's Ed25519 private key (hex) signs over the canonical (JCS) form.", inputSchema: z.object({
+        role: z.enum(["agent", "information_system"]).describe("Role of the subject this cert identifies"),
+        subject_id: z.string().describe("Stable subject identifier (e.g., agent DID, IS endpoint URL)"),
+        subject_pubkey_hex: z.string().describe("Ed25519 public key (hex) of the subject"),
+        issuer_id: z.string().describe("Issuer identifier"),
+        issuer_role: z.enum(["agent", "information_system", "trust_anchor"]).describe("Role of the issuer"),
+        issuer_pubkey_hex: z.string().describe("Ed25519 public key (hex) of the issuer"),
+        issuer_privkey_hex: z.string().describe("Ed25519 private key (hex) of the issuer — used to sign"),
+        binding: z.string().describe("For an agent: the APS agent_id. For an IS: the resource domain (e.g., mcp://api.bank.com)"),
+        not_before: z.number().describe("Earliest valid time (unix ms)"),
+        not_after: z.number().describe("Latest valid time (unix ms)"),
+        supported_versions: z.array(z.string()).describe("Protocol versions supported, highest first (e.g., ['1.0'])"),
+        attestation_grade: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional().describe("For agents: APS attestation grade 0-3"),
+        capabilities: z.array(z.string()).optional().describe("Optional capability tags"),
+      }) }, async (args) => {
+        try {
+          const unsigned = buildCertificate(
+            {
+              role: args.role,
+              subject_id: args.subject_id,
+              subject_pubkey_hex: args.subject_pubkey_hex,
+              issuer_id: args.issuer_id,
+              issuer_role: args.issuer_role,
+              binding: args.binding,
+              not_before: args.not_before,
+              not_after: args.not_after,
+              supported_versions: args.supported_versions,
+              attestation_grade: args.attestation_grade,
+              capabilities: args.capabilities,
+            },
+            args.issuer_pubkey_hex,
+          );
+          const cert = signCertificate(unsigned, args.issuer_privkey_hex);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({
+              certificate: cert,
+              certificate_id: certificateId(cert),
+            }, null, 2) }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("mutualAuthBuildCertificate failed", e) }], isError: true };
+        }
       });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("mutualAuthVerifyAttest failed", e) }], isError: true };
-    }
-  }
-);
 
-server.tool(
-  "mutualAuthDeriveSession",
-  "Derive the shared mutual-auth session record from both sides' Attests. Both parties MUST compute identical session_id given identical inputs (canonical JCS + sha256 of chosen_version, both cert ids, both nonces). Returns a MutualAuthSession with session_id + both certificates + expiry bounds, or failure reason.",
-  {
-    agent_attest: z.any().describe("The agent's MutualAuthAttest"),
-    is_attest: z.any().describe("The information system's MutualAuthAttest"),
-    policy: z.any().describe("MutualAuthPolicy"),
-    now_ms: z.number().optional().describe("Current unix ms — defaults to Date.now()"),
-  },
-  async (args) => {
-    try {
-      const res = deriveSession(
-        args.agent_attest as MutualAuthAttest,
-        args.is_attest as MutualAuthAttest,
-        args.policy as MutualAuthPolicy,
-        args.now_ms ?? Date.now(),
-      );
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("mutualAuthDeriveSession failed", e) }], isError: true };
-    }
-  }
-);
+server.registerTool("mutualAuthVerifyAttest", { description: "Verify a MutualAuthAttest against policy and trust anchors. Runs all 10 verification checks: signature, version negotiation, nonce match, timestamp freshness, certificate validity, issuer anchor check, binding constraints, downgrade detection, attestation grade policy, capability policy. Returns ok:true on success or a failure reason on rejection.", inputSchema: z.object({
+        attest: z.any().describe("MutualAuthAttest to verify"),
+        expected_peer_nonce_b64: z.string().describe("The nonce the peer sent in their prior hello or attest"),
+        expected_own_nonce_b64: z.string().describe("The nonce we sent in our own prior hello or attest"),
+        policy: z.any().describe("MutualAuthPolicy (accepted_versions, min_agent_grade, required_capabilities, max_clock_skew_ms, max_session_ms)"),
+        trust_anchors: z.array(z.any()).describe("TrustAnchor[] — local trusted roots"),
+        revoked_anchor_ids: z.array(z.string()).optional().describe("IDs of anchors revoked since the bundle was issued"),
+        now_ms: z.number().optional().describe("Current unix ms — defaults to Date.now()"),
+      }) }, async (args) => {
+        try {
+          const res = verifyAttest({
+            attest: args.attest as MutualAuthAttest,
+            expected_peer_nonce_b64: args.expected_peer_nonce_b64,
+            expected_own_nonce_b64: args.expected_own_nonce_b64,
+            policy: args.policy as MutualAuthPolicy,
+            trust_anchors: args.trust_anchors as TrustAnchor[],
+            revoked_anchor_ids: args.revoked_anchor_ids,
+            now_ms: args.now_ms ?? Date.now(),
+          });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("mutualAuthVerifyAttest failed", e) }], isError: true };
+        }
+      });
 
-server.tool(
-  "mutualAuthVerifyTrustBundle",
-  "Verify a TrustAnchorBundle signature and freshness. Caller supplies the list of trusted publisher public keys (root configuration). Returns ok:true on success or failure reason (untrusted_publisher, signature_invalid, bundle_expired, not_yet_valid).",
-  {
-    bundle: z.any().describe("TrustAnchorBundle to verify"),
-    trusted_publisher_pubkeys_hex: z.array(z.string()).describe("List of Ed25519 pubkeys (hex) authorized to publish bundles"),
-    now_ms: z.number().optional().describe("Current unix ms — defaults to Date.now()"),
-  },
-  async (args) => {
-    try {
-      const res = verifyBundle(
-        args.bundle as TrustAnchorBundle,
-        args.trusted_publisher_pubkeys_hex,
-        args.now_ms ?? Date.now(),
-      );
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }],
-      };
-    } catch (e: any) {
-      return { content: [{ type: "text" as const, text: safeError("mutualAuthVerifyTrustBundle failed", e) }], isError: true };
-    }
-  }
-);
+server.registerTool("mutualAuthDeriveSession", { description: "Derive the shared mutual-auth session record from both sides' Attests. Both parties MUST compute identical session_id given identical inputs (canonical JCS + sha256 of chosen_version, both cert ids, both nonces). Returns a MutualAuthSession with session_id + both certificates + expiry bounds, or failure reason.", inputSchema: z.object({
+        agent_attest: z.any().describe("The agent's MutualAuthAttest"),
+        is_attest: z.any().describe("The information system's MutualAuthAttest"),
+        policy: z.any().describe("MutualAuthPolicy"),
+        now_ms: z.number().optional().describe("Current unix ms — defaults to Date.now()"),
+      }) }, async (args) => {
+        try {
+          const res = deriveSession(
+            args.agent_attest as MutualAuthAttest,
+            args.is_attest as MutualAuthAttest,
+            args.policy as MutualAuthPolicy,
+            args.now_ms ?? Date.now(),
+          );
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("mutualAuthDeriveSession failed", e) }], isError: true };
+        }
+      });
+
+server.registerTool("mutualAuthVerifyTrustBundle", { description: "Verify a TrustAnchorBundle signature and freshness. Caller supplies the list of trusted publisher public keys (root configuration). Returns ok:true on success or failure reason (untrusted_publisher, signature_invalid, bundle_expired, not_yet_valid).", inputSchema: z.object({
+        bundle: z.any().describe("TrustAnchorBundle to verify"),
+        trusted_publisher_pubkeys_hex: z.array(z.string()).describe("List of Ed25519 pubkeys (hex) authorized to publish bundles"),
+        now_ms: z.number().optional().describe("Current unix ms — defaults to Date.now()"),
+      }) }, async (args) => {
+        try {
+          const res = verifyBundle(
+            args.bundle as TrustAnchorBundle,
+            args.trusted_publisher_pubkeys_hex,
+            args.now_ms ?? Date.now(),
+          );
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(res, null, 2) }],
+          };
+        } catch (e: any) {
+          return { content: [{ type: "text" as const, text: safeError("mutualAuthVerifyTrustBundle failed", e) }], isError: true };
+        }
+      });
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -5790,226 +5064,201 @@ server.tool(
 // can drive the cycle end-to-end against this single process.
 // ═══════════════════════════════════════════════════════════════
 
-server.tool(
-  "aps_capability_issue_challenge",
-  "v0.1 capability-token sink challenge (M1). Sink issues a signed canonical action statement. Returns the SinkChallenge and its challenge_hash. Used to bind the gateway's later policy evaluation to a specific action the sink authored. Search keywords: capability token, sink challenge, M1.",
-  {
-    sink_id: z.string().describe("DID of the sink issuing the challenge"),
-    subject_id: z.string().describe("DID of the subject the challenge is addressed to"),
-    action: z.object({
-      kind: z.string(),
-      target: z.string(),
-      parameters: z.record(z.any()),
-      resource_version: z.string(),
-    }).describe("Canonical action statement"),
-    sink_private_key: z.string().describe("Sink Ed25519 private key (hex)"),
-    sink_public_key: z.string().describe("Sink Ed25519 public key (hex)"),
-    validity_seconds: z.number().int().positive().optional(),
-    required_policy_freshness: z.object({
-      max_age_seconds: z.number().int().nonnegative(),
-      beacon_hash_required: z.boolean(),
-    }).optional(),
-  },
-  async (args) => {
-    try {
-      const sinkKey: CapabilityKeyPair = {
-        publicKey: args.sink_public_key,
-        privateKey: args.sink_private_key,
-      };
-      const challenge = issueCapabilitySinkChallenge({
-        sink_id: args.sink_id,
-        subject_id: args.subject_id,
-        action: args.action as CapabilitySinkAction,
-        validity_seconds: args.validity_seconds,
-        required_policy_freshness: args.required_policy_freshness,
-        sink_key: sinkKey,
+server.registerTool("aps_capability_issue_challenge", { description: "v0.1 capability-token sink challenge (M1). Sink issues a signed canonical action statement. Returns the SinkChallenge and its challenge_hash. Used to bind the gateway's later policy evaluation to a specific action the sink authored. Search keywords: capability token, sink challenge, M1.", inputSchema: z.object({
+        sink_id: z.string().describe("DID of the sink issuing the challenge"),
+        subject_id: z.string().describe("DID of the subject the challenge is addressed to"),
+        action: z.object({
+          kind: z.string(),
+          target: z.string(),
+          parameters: z.record(z.string(), z.any()),
+          resource_version: z.string(),
+        }).describe("Canonical action statement"),
+        sink_private_key: z.string().describe("Sink Ed25519 private key (hex)"),
+        sink_public_key: z.string().describe("Sink Ed25519 public key (hex)"),
+        validity_seconds: z.number().int().positive().optional(),
+        required_policy_freshness: z.object({
+          max_age_seconds: z.number().int().nonnegative(),
+          beacon_hash_required: z.boolean(),
+        }).optional(),
+      }) }, async (args) => {
+        try {
+          const sinkKey: CapabilityKeyPair = {
+            publicKey: args.sink_public_key,
+            privateKey: args.sink_private_key,
+          };
+          const challenge = issueCapabilitySinkChallenge({
+            sink_id: args.sink_id,
+            subject_id: args.subject_id,
+            action: args.action as CapabilitySinkAction,
+            validity_seconds: args.validity_seconds,
+            required_policy_freshness: args.required_policy_freshness,
+            sink_key: sinkKey,
+          });
+          const hash = capabilityChallengeHash(challenge);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({ challenge, challenge_hash: hash }, null, 2),
+            }],
+          };
+        } catch (e: unknown) {
+          return { content: [{ type: "text" as const, text: safeError("aps_capability_issue_challenge failed", e) }], isError: true };
+        }
       });
-      const hash = capabilityChallengeHash(challenge);
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({ challenge, challenge_hash: hash }, null, 2),
-        }],
-      };
-    } catch (e: unknown) {
-      return { content: [{ type: "text" as const, text: safeError("aps_capability_issue_challenge failed", e) }], isError: true };
-    }
-  },
-);
 
-server.tool(
-  "aps_capability_evaluate_authority",
-  "v0.1 capability-token authority evaluation request (M2). Subject signs a request carrying the sink's M1, the delegation chain, and a revealed authority-token preimage. The gateway consumes this to decide permit/deny. Search keywords: capability token, authority evaluation, M2.",
-  {
-    challenge: z.any().describe("SinkChallenge object from M1"),
-    delegation_chain: z.array(z.any()).describe("v2.x delegation envelopes"),
-    authority_token: z.object({
-      token_preimage: z.string(),
-      merkle_proof: z.array(z.string()),
-      scope_class: z.string(),
-    }),
-    freshness_beacon: z.object({
-      delegator_id: z.string(),
-      beacon_timestamp: z.string(),
-      beacon_signature: z.string(),
-    }),
-    subject_private_key: z.string().describe("Subject Ed25519 private key (hex)"),
-    subject_public_key: z.string().describe("Subject Ed25519 public key (hex)"),
-    delegation_chain_root: z.string().optional().describe("Override; otherwise computed from chain"),
-  },
-  async (args) => {
-    try {
-      const subjectKey: CapabilityKeyPair = {
-        publicKey: args.subject_public_key,
-        privateKey: args.subject_private_key,
-      };
-      const request = buildCapabilityEvaluationRequest({
-        challenge: args.challenge as CapabilitySinkChallenge,
-        delegation_chain: args.delegation_chain as CapabilityDelegationEnvelope[],
-        authority_token: args.authority_token as CapabilityTokenReveal,
-        freshness_beacon: args.freshness_beacon as CapabilityFreshnessBeacon,
-        subject_key: subjectKey,
-        delegation_chain_root: args.delegation_chain_root,
+server.registerTool("aps_capability_evaluate_authority", { description: "v0.1 capability-token authority evaluation request (M2). Subject signs a request carrying the sink's M1, the delegation chain, and a revealed authority-token preimage. The gateway consumes this to decide permit/deny. Search keywords: capability token, authority evaluation, M2.", inputSchema: z.object({
+        challenge: z.any().describe("SinkChallenge object from M1"),
+        delegation_chain: z.array(z.any()).describe("v2.x delegation envelopes"),
+        authority_token: z.object({
+          token_preimage: z.string(),
+          merkle_proof: z.array(z.string()),
+          scope_class: z.string(),
+        }),
+        freshness_beacon: z.object({
+          delegator_id: z.string(),
+          beacon_timestamp: z.string(),
+          beacon_signature: z.string(),
+        }),
+        subject_private_key: z.string().describe("Subject Ed25519 private key (hex)"),
+        subject_public_key: z.string().describe("Subject Ed25519 public key (hex)"),
+        delegation_chain_root: z.string().optional().describe("Override; otherwise computed from chain"),
+      }) }, async (args) => {
+        try {
+          const subjectKey: CapabilityKeyPair = {
+            publicKey: args.subject_public_key,
+            privateKey: args.subject_private_key,
+          };
+          const request = buildCapabilityEvaluationRequest({
+            challenge: args.challenge as CapabilitySinkChallenge,
+            delegation_chain: args.delegation_chain as CapabilityDelegationEnvelope[],
+            authority_token: args.authority_token as CapabilityTokenReveal,
+            freshness_beacon: args.freshness_beacon as CapabilityFreshnessBeacon,
+            subject_key: subjectKey,
+            delegation_chain_root: args.delegation_chain_root,
+          });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(request, null, 2) }],
+          };
+        } catch (e: unknown) {
+          return { content: [{ type: "text" as const, text: safeError("aps_capability_evaluate_authority failed", e) }], isError: true };
+        }
       });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(request, null, 2) }],
-      };
-    } catch (e: unknown) {
-      return { content: [{ type: "text" as const, text: safeError("aps_capability_evaluate_authority failed", e) }], isError: true };
-    }
-  },
-);
 
-server.tool(
-  "aps_capability_mint_receipt",
-  "v0.1 capability-token gateway receipt (M3). Gateway signs a permit or deny over the sink's exact challenge_hash. Echoes the M2 delegation_chain_root so the sink can verify the gateway saw the same chain the subject committed to. Search keywords: capability token, challenge receipt, gateway receipt, M3.",
-  {
-    request: z.any().describe("AuthorityEvaluationRequest from M2"),
-    decision: z.enum(["permit", "deny"]),
-    deny_reason: z.string().optional(),
-    policy_digest: z.string().describe("SHA-256 of the policy bundle used in evaluation"),
-    gateway_private_key: z.string(),
-    gateway_public_key: z.string(),
-  },
-  async (args) => {
-    try {
-      const gatewayKey: CapabilityKeyPair = {
-        publicKey: args.gateway_public_key,
-        privateKey: args.gateway_private_key,
-      };
-      const receipt = mintCapabilityChallengeReceipt({
-        request: args.request as CapabilityEvaluationRequest,
-        decision: args.decision as CapabilityDecision,
-        deny_reason: args.deny_reason,
-        policy_digest: args.policy_digest,
-        gateway_key: gatewayKey,
+server.registerTool("aps_capability_mint_receipt", { description: "v0.1 capability-token gateway receipt (M3). Gateway signs a permit or deny over the sink's exact challenge_hash. Echoes the M2 delegation_chain_root so the sink can verify the gateway saw the same chain the subject committed to. Search keywords: capability token, challenge receipt, gateway receipt, M3.", inputSchema: z.object({
+        request: z.any().describe("AuthorityEvaluationRequest from M2"),
+        decision: z.enum(["permit", "deny"]),
+        deny_reason: z.string().optional(),
+        policy_digest: z.string().describe("SHA-256 of the policy bundle used in evaluation"),
+        gateway_private_key: z.string(),
+        gateway_public_key: z.string(),
+      }) }, async (args) => {
+        try {
+          const gatewayKey: CapabilityKeyPair = {
+            publicKey: args.gateway_public_key,
+            privateKey: args.gateway_private_key,
+          };
+          const receipt = mintCapabilityChallengeReceipt({
+            request: args.request as CapabilityEvaluationRequest,
+            decision: args.decision as CapabilityDecision,
+            deny_reason: args.deny_reason,
+            policy_digest: args.policy_digest,
+            gateway_key: gatewayKey,
+          });
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(receipt, null, 2) }],
+          };
+        } catch (e: unknown) {
+          return { content: [{ type: "text" as const, text: safeError("aps_capability_mint_receipt failed", e) }], isError: true };
+        }
       });
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(receipt, null, 2) }],
-      };
-    } catch (e: unknown) {
-      return { content: [{ type: "text" as const, text: safeError("aps_capability_mint_receipt failed", e) }], isError: true };
-    }
-  },
-);
 
-server.tool(
-  "aps_capability_sign_effect",
-  "v0.1 capability-token sink effect receipt (M4). Sink consumes the token preimage from the gateway's M3 (rejecting on nullifier replay), executes the action, and signs an EffectReceipt binding the consumed token to the result. The (M1, M3, M4) tuple is the full attestation record. Search keywords: capability token, effect receipt, M4, sink attestation.",
-  {
-    challenge: z.any().describe("Original SinkChallenge from M1 (for binding verification)"),
-    challenge_receipt: z.any().describe("ChallengeReceipt from M3"),
-    effect: z.object({
-      executed_at: z.string(),
-      outcome: z.enum(["success", "failure", "partial"]),
-      result_digest: z.string(),
-    }),
-    sink_private_key: z.string(),
-    sink_public_key: z.string(),
-    gateway_public_key: z.string().describe("Used to verify M3 before consuming the token"),
-    expected_delegation_chain_root: z.string().optional().describe("If omitted, falls back to the receipt's own root"),
-  },
-  async (args) => {
-    try {
-      const sinkKey: CapabilityKeyPair = {
-        publicKey: args.sink_public_key,
-        privateKey: args.sink_private_key,
-      };
-      const challenge = args.challenge as CapabilitySinkChallenge;
-      const receipt = args.challenge_receipt as CapabilityChallengeReceipt;
+server.registerTool("aps_capability_sign_effect", { description: "v0.1 capability-token sink effect receipt (M4). Sink consumes the token preimage from the gateway's M3 (rejecting on nullifier replay), executes the action, and signs an EffectReceipt binding the consumed token to the result. The (M1, M3, M4) tuple is the full attestation record. Search keywords: capability token, effect receipt, M4, sink attestation.", inputSchema: z.object({
+        challenge: z.any().describe("Original SinkChallenge from M1 (for binding verification)"),
+        challenge_receipt: z.any().describe("ChallengeReceipt from M3"),
+        effect: z.object({
+          executed_at: z.string(),
+          outcome: z.enum(["success", "failure", "partial"]),
+          result_digest: z.string(),
+        }),
+        sink_private_key: z.string(),
+        sink_public_key: z.string(),
+        gateway_public_key: z.string().describe("Used to verify M3 before consuming the token"),
+        expected_delegation_chain_root: z.string().optional().describe("If omitted, falls back to the receipt's own root"),
+      }) }, async (args) => {
+        try {
+          const sinkKey: CapabilityKeyPair = {
+            publicKey: args.sink_public_key,
+            privateKey: args.sink_private_key,
+          };
+          const challenge = args.challenge as CapabilitySinkChallenge;
+          const receipt = args.challenge_receipt as CapabilityChallengeReceipt;
 
-      const verification = verifyCapabilityChallengeReceipt({
-        receipt,
-        expected_challenge: challenge,
-        expected_delegation_chain_root:
-          args.expected_delegation_chain_root ?? receipt.delegation_chain_root,
-        gateway_public_key: args.gateway_public_key,
+          const verification = verifyCapabilityChallengeReceipt({
+            receipt,
+            expected_challenge: challenge,
+            expected_delegation_chain_root:
+              args.expected_delegation_chain_root ?? receipt.delegation_chain_root,
+            gateway_public_key: args.gateway_public_key,
+          });
+          if (!verification.ok) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: "M3 verification failed", reason: verification.reason }) }],
+              isError: true,
+            };
+          }
+          if (receipt.decision !== "permit") {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: "M3 is a deny — refusing to emit M4", deny_reason: receipt.deny_reason }) }],
+              isError: true,
+            };
+          }
+          const preimage = receipt.authority_token_preimage!;
+          // C-3 fix: reject replay before doing work, and consume the nullifier only
+          // AFTER the effect receipt is successfully signed. Consuming before signing
+          // meant a transient signing failure permanently burned a token that never
+          // produced a valid M4. The block is synchronous (no await between the peek,
+          // the sign, and the consume), so there is no TOCTOU window.
+          if (capabilityNullifierSet.isConsumed(preimage)) {
+            return {
+              content: [{ type: "text" as const, text: JSON.stringify({ error: "nullifier replay: token preimage already consumed" }) }],
+              isError: true,
+            };
+          }
+
+          const effectReceipt = signCapabilityEffectReceipt({
+            challenge_receipt: receipt,
+            effect: args.effect as CapabilitySinkEffect,
+            sink_key: sinkKey,
+          });
+          capabilityNullifierSet.consume(preimage);
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                effect_receipt: effectReceipt,
+                nullifier_set_size: capabilityNullifierSet.size(),
+              }, null, 2),
+            }],
+          };
+        } catch (e: unknown) {
+          return { content: [{ type: "text" as const, text: safeError("aps_capability_sign_effect failed", e) }], isError: true };
+        }
       });
-      if (!verification.ok) {
+
+server.registerPrompt("coordination_role", { description: "Get instructions for your assigned coordination role", argsSchema: z.object({}) }, async () => {
+        const role = state.agentRole || 'default';
+        const instructions = ROLE_PROMPTS[role] || ROLE_PROMPTS['default'];
+
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ error: "M3 verification failed", reason: verification.reason }) }],
-          isError: true,
+          messages: [{
+            role: "user" as const,
+            content: {
+              type: "text" as const,
+              text: `You are connected to the Agent Passport Coordination Server.\n\nYour role: ${role}\nYour agent ID: ${state.agentId || 'unknown'}\n\n${instructions}\n\nCall get_my_role to see your active tasks.`,
+            },
+          }],
         };
-      }
-      if (receipt.decision !== "permit") {
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify({ error: "M3 is a deny — refusing to emit M4", deny_reason: receipt.deny_reason }) }],
-          isError: true,
-        };
-      }
-      const preimage = receipt.authority_token_preimage!;
-      // C-3 fix: reject replay before doing work, and consume the nullifier only
-      // AFTER the effect receipt is successfully signed. Consuming before signing
-      // meant a transient signing failure permanently burned a token that never
-      // produced a valid M4. The block is synchronous (no await between the peek,
-      // the sign, and the consume), so there is no TOCTOU window.
-      if (capabilityNullifierSet.isConsumed(preimage)) {
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify({ error: "nullifier replay: token preimage already consumed" }) }],
-          isError: true,
-        };
-      }
-
-      const effectReceipt = signCapabilityEffectReceipt({
-        challenge_receipt: receipt,
-        effect: args.effect as CapabilitySinkEffect,
-        sink_key: sinkKey,
       });
-      capabilityNullifierSet.consume(preimage);
-      return {
-        content: [{
-          type: "text" as const,
-          text: JSON.stringify({
-            effect_receipt: effectReceipt,
-            nullifier_set_size: capabilityNullifierSet.size(),
-          }, null, 2),
-        }],
-      };
-    } catch (e: unknown) {
-      return { content: [{ type: "text" as const, text: safeError("aps_capability_sign_effect failed", e) }], isError: true };
-    }
-  },
-);
-
-server.prompt(
-  "coordination_role",
-  "Get instructions for your assigned coordination role",
-  {},
-  async () => {
-    const role = state.agentRole || 'default';
-    const instructions = ROLE_PROMPTS[role] || ROLE_PROMPTS['default'];
-
-    return {
-      messages: [{
-        role: "user" as const,
-        content: {
-          type: "text" as const,
-          text: `You are connected to the Agent Passport Coordination Server.\n\nYour role: ${role}\nYour agent ID: ${state.agentId || 'unknown'}\n\n${instructions}\n\nCall get_my_role to see your active tasks.`,
-        },
-      }],
-    };
-  }
-);
 
 // ═══════════════════════════════════════
 // Smithery sandbox export (for publish scanning)
@@ -6036,8 +5285,17 @@ async function main() {
     ? ` | Role: ${state.agentRole}`
     : ' | No role (call identify or set AGENT_KEY)';
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  // serveStdio serves both the 2025 and 2026-07-28 eras from one entry. The
+  // default legacy posture on stdio is 'serve': the connection is pinned to an
+  // instance from this factory on its opening request.
+  //
+  // The factory returns the module's single `server`. Every registration in
+  // this file is a module-scope call against that instance, so there is no
+  // second instance to hand out. That is safe here because one stdio process
+  // serves exactly one connection: the factory was measured being invoked once
+  // per process for a 2025 initialize, a modern server/discover opening, and a
+  // modern tools/call opening alike.
+  serveStdio(() => server);
   console.error(`Agent Passport MCP Server v2.0 running${roleInfo}`);
   console.error(`Tasks loaded: ${state.taskUnits.size} | Agora messages: ${state.agoraFeed.messages.length}`);
 }
