@@ -10,7 +10,7 @@ This repo is tightly coupled to `agent-passport-system` (the SDK). Version align
 
 ## Dev environment
 
-- Node.js >= 18
+- Node.js >= 20
 - `npm install` installs both this package and the SDK dep.
 - `src/index.ts` is the single-file source of all MCP tool registrations. Do not split until there is a real reason.
 
