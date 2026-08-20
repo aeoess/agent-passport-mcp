@@ -8,6 +8,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import {
   generateKeyPair, sign,
   createHybridTimestamp,
@@ -45,9 +47,65 @@ test('all 11 v2 boundary tools are registered in src/index.ts', () => {
   }
 })
 
-test('tool count is exactly 150 (v3.1.0 + 4 capability-token v0.1 reference tools)', () => {
-  const count = (INDEX_SRC.match(/server\.registerTool\(/g) || []).length
-  assert.equal(count, 150, `Expected 150 server.registerTool( calls, got ${count}`)
+// The tool inventory is asserted against the RUNTIME registry, not against a literal
+// and not by counting `server.registerTool(` in source text.
+//
+// Counting call sites in source is what let a downstream consumer silently report zero
+// once the registration API was renamed: the grep still ran, still matched nothing, and
+// still looked like a result. This asserts the two things that must agree, the live
+// registry and the generated manifest, so adding a tool cannot leave a stale number
+// anywhere and cannot be faked by editing a string.
+test('generated manifest equals the runtime tool registry, names and count', async () => {
+  // createSandboxServer() suppresses the deferred main(). Without it the module
+  // connects a stdio transport and the test run never exits.
+  const mod = await import('../build/index.js')
+  mod.createSandboxServer()
+  const { REGISTERED_TOOL_NAMES } = mod
+  const manifest = JSON.parse(readFileSync(new URL('../tools-manifest.json', import.meta.url), 'utf8'))
+
+  assert.equal(
+    manifest.count, REGISTERED_TOOL_NAMES.length,
+    `manifest count ${manifest.count} != runtime registry ${REGISTERED_TOOL_NAMES.length}. ` +
+    `Run npm run build to regenerate tools-manifest.json.`,
+  )
+  assert.deepEqual(
+    [...manifest.tools].sort(), [...REGISTERED_TOOL_NAMES].sort(),
+    'manifest tool NAMES differ from the runtime registry, not just the count',
+  )
+  assert.equal(new Set(REGISTERED_TOOL_NAMES).size, REGISTERED_TOOL_NAMES.length,
+    'a tool name is registered twice')
+})
+
+// The registry is populated BEFORE the wrapper's profile filter returns early. If that
+// ordering is ever reversed the manifest silently becomes a function of whatever
+// APS_PROFILE was set when the build ran, which is the same defect one layer up.
+test('the manifest is a property of the source, not of APS_PROFILE', () => {
+  const gen = fileURLToPath(new URL('../scripts/generate-manifest.mjs', import.meta.url))
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const read = () => readFileSync(new URL('../tools-manifest.json', import.meta.url), 'utf8')
+
+  const before = read()
+  execFileSync(process.execPath, [gen], { cwd: root, env: { ...process.env, APS_PROFILE: 'governance' }, stdio: 'pipe' })
+  const underGovernance = read()
+  execFileSync(process.execPath, [gen], { cwd: root, env: { ...process.env, APS_PROFILE: 'full' }, stdio: 'pipe' })
+  const underFull = read()
+
+  assert.equal(
+    underGovernance, underFull,
+    'tools-manifest.json differs between APS_PROFILE=governance and APS_PROFILE=full. ' +
+    'The registry push must happen BEFORE the profile filter returns early in the ' +
+    'registerTool wrapper, or the inventory becomes environment-dependent.',
+  )
+  assert.equal(before, underFull, 'regeneration was not idempotent')
+})
+
+test('evaluate_threshold is gone and the amendment lifecycle replaced it', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../tools-manifest.json', import.meta.url), 'utf8'))
+  assert.ok(!manifest.tools.includes('evaluate_threshold'),
+    'evaluate_threshold counted declared signers without verifying them; it must not come back')
+  for (const t of ['propose_amendment', 'sign_amendment', 'verify_amendment']) {
+    assert.ok(manifest.tools.includes(t), `${t} missing from the manifest`)
+  }
 })
 
 test('essential profile includes 3 new boundary tools', () => {

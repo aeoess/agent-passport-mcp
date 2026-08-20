@@ -3,6 +3,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, platform } from "node:os";
+import { toolCount } from "./toolManifest.js";
 
 const LOCAL_CONFIG = {
   command: "npx",
@@ -99,7 +100,7 @@ function setup() {
     console.log("  Manual setup: add this to your MCP config:\n");
     console.log(JSON.stringify({ mcpServers: { "agent-passport": serverConfig } }, null, 2));
   } else {
-    console.log(`\n  Restart your AI client to activate Agent Passport (150 tools).`);
+    console.log(`\n  Restart your AI client to activate Agent Passport (${toolCount()} tools).`);
     console.log(`  Then say: "Create an agent identity" or "Delegate authority"\n`);
     if (!useRemote) {
       console.log(`  Tip: Use --remote for zero-install SSE mode: npx agent-passport-system-mcp setup --remote\n`);

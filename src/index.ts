@@ -164,7 +164,6 @@ import type {
 import {
   createCharter, signCharter, verifyCharter,
   createAmendment, signAmendment, verifyAmendment,
-  evaluateThreshold,
   createOfficeRegistry, createOfficeTransfer,
   createApprovalRequest, addApprovalSignature, evaluateApprovalRequest,
   findOffice, findOfficesByHolder, resolveSuccessor,
@@ -199,7 +198,7 @@ import {
 } from "agent-passport-system";
 
 import type {
-  CharterCore, Office, MultiClassThresholdPolicy,
+  CharterCore, CharterAmendment, Office, MultiClassThresholdPolicy,
   ApprovalPolicy, ApprovalRequest as ApprovalReq,
   GatewayImportPolicy,
 } from "agent-passport-system";
@@ -221,6 +220,8 @@ import type {
   MutualAuthFailureReason, TrustAnchor, TrustAnchorBundle,
   BuildCertificateInput,
 } from "agent-passport-system";
+
+import { toolCount } from "./toolManifest.js";
 
 // ═══════════════════════════════════════
 // Capability Token v0.1 (reference implementation)
@@ -301,6 +302,11 @@ interface SessionState {
   sessionAgent: SocialContractAgent | null;
   // Rome-Complete: Charter & Institutional Governance
   charters: Map<string, CharterCore>;
+  // Amendment lifecycle objects for active workflows. Session state is NOT an
+  // authoritative registry: it is process-local, lost on restart, has no persistence
+  // and carries no external trust. The SDK remains the authority for verification
+  // semantics, and a verdict is only ever as good as the artifact handed to it.
+  amendments: Map<string, CharterAmendment>;
   approvalRequests: Map<string, ApprovalReq>;
   // Agent Attestation Architecture (Phase 1)
   issuanceContexts: Map<string, IssuanceContext>;      // passportId → full issuance record
@@ -394,6 +400,7 @@ const state: SessionState = {
   derivationStore: new Map<string, DerivationReceipt>(),
   sessionAgent: null,
   charters: new Map(),
+  amendments: new Map(),
   approvalRequests: new Map(),
   // Agent Attestation Architecture (Phase 1)
   issuanceContexts: new Map(),
@@ -661,7 +668,8 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'create_agent_context', 'execute_with_context', 'complete_action',
     'create_delegation', 'verify_delegation', 'revoke_delegation',
     'create_charter', 'sign_charter', 'verify_charter',
-    'evaluate_threshold', 'create_approval_request', 'add_approval_signature',
+    'propose_amendment', 'sign_amendment', 'verify_amendment',
+    'create_approval_request', 'add_approval_signature',
     'create_outcome_record', 'add_principal_report',
     'activate_emergency', 'define_emergency_pathway',
     'create_artifact_provenance', 'create_policy_context',
@@ -701,7 +709,6 @@ const TOOL_PROFILES: Record<string, Set<string>> = {
     'gateway_stats', 'create_delegation', 'load_values_floor', 'attest_to_floor',
     'create_hybrid_timestamp', 'compare_timestamps', 'validate_temporal_rights',
     'create_reserve_attestation', 'vouch_reputation', 'apply_reputation_downgrade',
-    'evaluate_threshold',
   ]),
   comms: new Set([
     'identify', 'generate_keys',
@@ -745,8 +752,27 @@ const profileFilter = TOOL_PROFILES[activeProfile];
 // which would have silently disabled both profile filtering and the handler
 // try/catch. The wrapper body is unchanged: registerTool(name, config, cb)
 // still carries the handler as its last argument.
+// Every tool name that reaches the wrapper, in registration order.
+//
+// This is the single structural source of truth for the tool inventory. The build
+// step writes tools-manifest.json from this array, the boundary test asserts the
+// live registry equals that manifest, and list_profiles and setup read its count.
+// Nothing counts `server.registerTool(` call sites in source text: that is source
+// scraping, and it is the coupling that let a downstream consumer silently report
+// zero once the registration API was renamed.
+//
+// RECORDED BEFORE THE PROFILE FILTER ON PURPOSE. The wrapper below RETURNS EARLY
+// when APS_PROFILE filters a tool out. Pushing after that early return would make
+// the manifest a function of whichever profile happened to be set when the build
+// ran, which is the same defect one layer up. The inventory is a property of the
+// source, not of the environment, so the push happens first and unconditionally.
+// tests/v2-boundary-tools.test.mjs asserts the manifest is identical under
+// APS_PROFILE=full and APS_PROFILE=governance.
+export const REGISTERED_TOOL_NAMES: string[] = [];
+
 const _origTool: any = server.registerTool.bind(server);
 (server as any).registerTool = function(name: string, ...rest: any[]) {
+  REGISTERED_TOOL_NAMES.push(name);
   if (name !== 'list_profiles' && activeProfile !== 'full' && profileFilter && !profileFilter.has(name)) {
     return; // filtered out by profile
   }
@@ -860,7 +886,9 @@ const TOOL_SCOPE_MAP: Record<string, string> = {
   'create_charter': 'governance',
   'verify_charter': 'governance',
   'sign_charter': 'governance',
-  'evaluate_threshold': 'governance',
+  'propose_amendment': 'governance',
+  'sign_amendment': 'governance',
+  'verify_amendment': 'governance',
   'create_approval_request': 'governance',
   'add_approval_signature': 'governance',
   'generate_governance_block': 'governance',
@@ -969,7 +997,9 @@ server.registerTool("list_profiles", { description: "Show available tool profile
           `• ${name} (${tools.size} tools): ${Array.from(tools).slice(0, 6).join(', ')}${tools.size > 6 ? '...' : ''}`
         );
         const essentialSize = TOOL_PROFILES.essential.size;
-        return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? '150' : profileFilter?.size || '150'} tools)\n\nRecommended: essential (${essentialSize} tools) - identity, delegation, enforcement, commerce, reputation.\n\n${lines.join('\n')}\n\n• full (150 tools): All tools exposed (default)` }] };
+        // Generated count, never a literal. See src/toolManifest.ts.
+        const total = toolCount(REGISTERED_TOOL_NAMES.length);
+        return { content: [{ type: "text", text: `📋 Tool Profiles (set APS_PROFILE env var):\n\nActive: ${activeProfile} (${activeProfile === 'full' ? total : profileFilter?.size || total} tools)\n\nRecommended: essential (${essentialSize} tools) - identity, delegation, enforcement, commerce, reputation.\n\n${lines.join('\n')}\n\n• full (${total} tools): All tools exposed (default)` }] };
       });
 
 // ═══════════════════════════════════════
@@ -4277,20 +4307,89 @@ server.registerTool("sign_charter", { description: "Add a founding signature to 
         return { content: [{ type: "text", text: `✅ Signature added to ${signed.charterId}\n\nTotal signatures: ${signed.foundingSignatures.length}\nNew signer role: ${args.signer_role}` }] };
       });
 
-server.registerTool("evaluate_threshold", { description: "Evaluate whether signatures meet a multi-class threshold policy (Consilium Q5).", inputSchema: z.object({
-        charter_id: z.string().describe("Charter whose amendment policy to evaluate against"),
-        signatures: z.array(z.object({
-          publicKey: z.string(),
-          keyClass: z.string(),
-          signedAt: z.string().default(new Date().toISOString()),
-          signature: z.string().default(""),
-        })),
+// ═══════════════════════════════════════
+// TOOLS: charter amendment lifecycle
+// ═══════════════════════════════════════
+//
+// These three replace the removed `evaluate_threshold`, which counted declared
+// signers without verifying anything and still printed a threshold verdict.
+//
+// Boundary rule for this path: MCP never constructs a signing preimage, never
+// canonicalizes governance content, and never accepts signed bytes from a caller.
+// Every cryptographic meaning comes from an SDK call. `amendmentSignContent` stays
+// private to the SDK; a copy here would be a second preimage on a second release
+// cadence.
+//
+// WHY THESE SCHEMAS TAKE PRIVATE KEYS. The private-key parameters below are
+// preserved deliberately, not overlooked. The existing MCP signing tools already
+// use this model, `sign_charter` immediately above among them, and MCP accepts
+// private keys at roughly 50 call sites. Externalizing signing for these three
+// while their neighbours keep in-process keys would convert an inconsistency into
+// a fix. This preserves consistency for this release and does NOT decide the
+// broader MCP key custody question, which is open as its own decision across the
+// whole server. Do not read `propose_amendment(private_key)` as settled
+// architecture.
+
+server.registerTool("propose_amendment", { description: "Propose an amendment to a charter. Supplies a full replacement CharterCore, not a patch. The SDK derives the signing preimage and produces the proposer signature. Session state is not an authoritative registry: amendments live only in this process, are lost on restart, and carry no external trust.", inputSchema: z.object({
+        charter_id: z.string().describe("Charter being amended"),
+        proposed_charter: z.record(z.string(), z.any()).describe("Full CharterCore replacement, not a patch"),
+        description: z.string().describe("Human-readable description of the change"),
+        proposer_private_key: z.string(),
+        proposer_public_key: z.string(),
+        effective_at: z.string().optional().describe("ISO 8601, when the amendment takes effect if approved"),
       }) }, async (args) => {
         const charter = state.charters.get(args.charter_id);
         if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
-        const result = evaluateThreshold(charter.amendmentPolicy, args.signatures);
-        const classLines = result.classStatus.map(c => `  ${c.role}: ${c.collected}/${c.required} ${c.satisfied ? '✅' : '❌'}`).join('\n');
-        return { content: [{ type: "text", text: `${result.met ? '✅ THRESHOLD MET' : '❌ THRESHOLD NOT MET'}\n\nClasses:\n${classLines}\n\nTotal: ${result.totalValidSignatures}/${result.totalRequired}${result.errors.length ? '\n\nIssues:\n' + result.errors.join('\n') : ''}` }] };
+        const amendment = createAmendment({
+          charter,
+          proposedCharter: args.proposed_charter as unknown as CharterCore,
+          description: args.description,
+          proposerPrivateKey: args.proposer_private_key,
+          proposerPublicKey: args.proposer_public_key,
+          ...(args.effective_at ? { effectiveAt: args.effective_at } : {}),
+        });
+        state.amendments.set(amendment.amendmentId, amendment);
+        return { content: [{ type: "text", text: `✅ Amendment proposed\n\namendment_id: ${amendment.amendmentId}\ncharter_id: ${amendment.charterId}\nfrom_version: ${amendment.fromVersion}\nto_version: ${amendment.toVersion}\nsignatures: ${amendment.signatures.length}\nstatus: ${amendment.status}\n\nNext: sign_amendment to collect signatures, then verify_amendment.` }] };
+      });
+
+server.registerTool("sign_amendment", { description: "Add a signature to a proposed amendment. The SDK derives the preimage and signs it; MCP never sees or builds the signed bytes. Session state is not an authoritative registry: amendments live only in this process, are lost on restart, and carry no external trust.", inputSchema: z.object({
+        amendment_id: z.string(),
+        signer_private_key: z.string(),
+        signer_public_key: z.string(),
+        signer_role: z.string().describe("The key class the charter's amendment policy counts this signature against"),
+      }) }, async (args) => {
+        const amendment = state.amendments.get(args.amendment_id);
+        if (!amendment) return { content: [{ type: "text", text: `❌ Amendment ${args.amendment_id} not found` }] };
+        const signed = signAmendment(amendment, args.signer_private_key, args.signer_public_key, args.signer_role);
+        state.amendments.set(signed.amendmentId, signed);
+        const roles = signed.signatures.map(sig => sig.role).join(', ');
+        return { content: [{ type: "text", text: `✅ Signature added to ${signed.amendmentId}\n\nsignatures: ${signed.signatures.length}\nroles collected: ${roles || '(none)'}\nstatus: ${signed.status}\n\nSignature counting and threshold evaluation happen in verify_amendment.` }] };
+      });
+
+server.registerTool("verify_amendment", { description: "Verify an amendment against its charter's amendment policy. Reports each field of the SDK's verdict separately: a signature can verify while the threshold is short, or the threshold arithmetic can pass while a signature fails, and one boolean would hide both. Session state is not an authoritative registry: amendments live only in this process, are lost on restart, and carry no external trust.", inputSchema: z.object({
+        charter_id: z.string(),
+        amendment_id: z.string(),
+      }) }, async (args) => {
+        const charter = state.charters.get(args.charter_id);
+        if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
+        const amendment = state.amendments.get(args.amendment_id);
+        if (!amendment) return { content: [{ type: "text", text: `❌ Amendment ${args.amendment_id} not found` }] };
+        const v = verifyAmendment(amendment, charter);
+        const mark = (b: boolean) => b ? '✅' : '❌';
+        // Field order is deliberate: `valid` is rendered LAST and labelled as the
+        // conjunction of the fields above it, never as a headline verdict. A bare
+        // `valid: false` answers nothing on its own; the field that flipped, plus
+        // `errors`, is the answer.
+        const lines = [
+          `charter_exists:         ${mark(v.charterExists)} ${v.charterExists}`,
+          `version_match:          ${mark(v.versionMatch)} ${v.versionMatch}`,
+          `signatures_valid:       ${mark(v.signaturesValid)} ${v.signaturesValid}`,
+          `proposed_charter_valid: ${mark(v.proposedCharterValid)} ${v.proposedCharterValid}`,
+          `threshold_met:          ${mark(v.thresholdMet)} ${v.thresholdMet}`,
+        ];
+        const errs = v.errors.length ? `\n\nerrors:\n${v.errors.map(e => `  - ${e}`).join('\n')}` : '\n\nerrors: (none)';
+        const conj = `\n\nvalid: ${v.valid}  (the conjunction of the five fields above, not a standalone verdict)`;
+        return { content: [{ type: "text", text: `Amendment ${amendment.amendmentId} against charter ${charter.charterId}\n\n${lines.join('\n')}${errs}${conj}` }] };
       });
 
 server.registerTool("create_approval_request", { description: "Create a multi-party approval request for charter amendments, office transfers, etc.", inputSchema: z.object({
