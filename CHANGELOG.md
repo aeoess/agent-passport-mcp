@@ -1,5 +1,30 @@
 # Changelog
 
+## 5.0.0 (2026-08-20)
+
+### Breaking
+
+- **`evaluate_threshold` is removed.** It accepted a charter id and signature records whose `signature` field defaulted to the empty string, then answered THRESHOLD MET against the charter's amendment policy. It evaluated declared signer records without verifying that those signatures were valid for the amendment being considered, and no amendment ever reached it. There is no input-compatible replacement, deliberately: the answer the tool gave was not the answer it claimed to give.
+- **The amendment threshold answer changes meaning.** Where a caller previously learned whether enough signatures had been declared, the replacement reports whether enough cryptographically valid signatures exist over that specific amendment. A workflow that returned MET can now return not met on the same signers.
+- **The SDK dependency moves to `agent-passport-system ^4.4.0`**, up from `^3.3.1`. That line refuses a new write carrying an integer outside the interoperable IEEE 754 range at signing boundaries. Existing verification paths continue to use the unrestricted canonicalizer, so this write-policy change does not reject previously created artifacts during verification.
+
+### Added
+
+- **`propose_amendment`, `sign_amendment` and `verify_amendment`**, the charter amendment lifecycle, in the `governance` profile. `verify_amendment` reports each field of the SDK's verdict separately, `charter_exists`, `version_match`, `signatures_valid`, `proposed_charter_valid`, `threshold_met` and `errors`, with `valid` reported last and labelled as the conjunction of the others. A single verdict line is what made the removed tool misleading; a caller needs to see that signatures verified while the threshold fell short, and the reverse.
+- **A generated tool manifest.** Tool metadata is now produced from the runtime registration path instead of maintained as separate counts, which prevents profile-dependent drift. The tool count moves from 150 to 152 and is no longer written by hand in any file.
+
+### Security
+
+- **The cryptographic boundary is enforced by automated checks.** This server does not construct a signing preimage, does not canonicalize governance content, and does not accept signed bytes from a caller. Automated checks prevent it from introducing independent cryptographic derivation logic, and they fail naming the rule and the offending symbol.
+- New tests cover a forged signature failing to count with the forged signer named, a signature refusing to replay onto an amendment carrying a different proposed charter, and the SDK's rejection of an explicit `undefined` member reaching the caller unchanged in meaning.
+
+### Compatibility
+
+- Migration is a workflow change rather than a parameter change:
+  `create_charter` then `propose_amendment`, `sign_amendment` for each signer, then `verify_amendment`.
+- Amendments live in session state only. They do not survive a restart and carry no external trust; the SDK remains the authority for verification semantics.
+- The `gateway` profile keeps no amendment capability. Its members are enforcement and runtime tools, and amendment review is a governance workflow.
+
 ## 4.0.0 (2026-07-31)
 
 ### Added
