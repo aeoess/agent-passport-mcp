@@ -2,7 +2,7 @@
   "name": "agent-passport-system-mcp",
   "version": "5.0.0",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
-  "description": "MCP server for the Agent Passport System, protocol-layer tools only. Identity, delegation, reputation, attestation, coordination, commerce, charter amendment lifecycle, attribution primitive, attribution settlement. Tool count and the SDK version this tracks live in the README, which ships with this package. For gateway-runtime tools (ProxyGateway, AgentContext, DataEnforcementGate), use the gateway.aeoess.com REST API.",
+  "description": "MCP server for the Agent Passport System, protocol-layer tools only. Identity, delegation, reputation, attestation, coordination, commerce, charter amendment lifecycle, attribution. Counts and the SDK version it tracks live in the README.",
   "type": "module",
   "bin": {
     "agent-passport-system-mcp": "./build/bin.js",
