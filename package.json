@@ -11,15 +11,16 @@
   "files": [
     "build",
     "CONTRIBUTING.md",
-    "CODE_OF_CONDUCT.md"
+    "CODE_OF_CONDUCT.md",
+    "tools-manifest.json"
   ],
   "scripts": {
-    "build": "npx tsc && chmod 755 build/bin.js build/index.js build/setup.js",
+    "build": "npx tsc && chmod 755 build/bin.js build/index.js build/setup.js && node scripts/generate-manifest.mjs",
     "test": "npm run build && node --test tests/*.test.mjs build/__tests__/*.test.js",
     "watch": "tsc --watch",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepublishOnly": "npm run build && npm test",
-    "postinstall": "echo '\\n🔑 Agent Passport MCP installed! Run: npx agent-passport-system-mcp setup\\n   Or for zero-install remote: npx agent-passport-system-mcp setup --remote\\n'",
+    "postinstall": "echo '\\n\ud83d\udd11 Agent Passport MCP installed! Run: npx agent-passport-system-mcp setup\\n   Or for zero-install remote: npx agent-passport-system-mcp setup --remote\\n'",
     "postversion": "if [ -f ~/aps-web/scripts/sync-project-state.mjs ]; then node ~/aps-web/scripts/sync-project-state.mjs mcp $npm_package_version; else echo 'postversion: ~/aps-web/scripts/sync-project-state.mjs not found, skipping project-state sync'; fi"
   },
   "keywords": [
@@ -50,7 +51,7 @@
   "homepage": "https://github.com/aeoess/agent-passport-mcp",
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
-    "agent-passport-system": "^3.3.1",
+    "agent-passport-system": "^4.4.0",
     "zod": "^4.2.0"
   },
   "overrides": {
