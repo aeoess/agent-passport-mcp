@@ -1,0 +1,117 @@
+name: Release
+
+# Triggered by pushing a version tag (e.g. v5.0.1). Runs the full test
+# gate, publishes to npm via Trusted Publishing (OIDC, no NPM_TOKEN),
+# then creates a GitHub Release with the published tarball, a signed
+# SLSA build-provenance attestation, and an SBOM attached as assets.
+#
+# Adapted from the SDK's .github/workflows/release.yml in
+# aeoess/agent-passport-system, which is the reference implementation for
+# this pipeline. Every action sha below is copied from that file.
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Least privilege: the write scopes live on this job only, never at the
+    # workflow top level, so no other (future) job inherits them.
+    permissions:
+      contents: write # create the GitHub Release and upload assets
+      id-token: write # OIDC: npm Trusted Publishing + Sigstore signing for attestation
+      attestations: write # persist the build-provenance attestation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          # npm Trusted Publishing requires Node 22.14.0+ (npm CLI 11.5.1+).
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify tag matches package.json version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version=$(node -p "require('./package.json').version")
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag v$tag_version does not match package.json version $pkg_version"
+            exit 1
+          fi
+
+      - name: Ensure npm CLI supports Trusted Publishing
+        # Documented requirement, not a workaround: npm Trusted Publishing
+        # needs npm CLI 11.5.1 or newer on Node 22.14.0 or newer. Publishing
+        # over OIDC from a supported CLI generates npm provenance
+        # automatically. The runner image's bundled npm can predate that
+        # floor, so the version is installed explicitly and pinned rather
+        # than tracked through npm@latest.
+        run: npm install -g npm@11.5.1
+
+      - name: Install dependencies
+        env:
+          NODE_ENV: development
+        run: npm ci --include=dev
+
+      # This package has no `typecheck` script, so the compiler is invoked
+      # directly, the same way the SDK workflow does it.
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Packed ONCE. The tarball produced here is the artifact that gets
+      # attested and the artifact that gets published, so the provenance
+      # subject and the shipped bytes are the same file. Letting `npm publish`
+      # pack a second time would attest one tarball and ship another.
+      - name: Pack tarball
+        id: pack
+        run: |
+          tarball=$(npm pack | tail -n1)
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
+        with:
+          subject-path: ${{ steps.pack.outputs.tarball }}
+
+      - name: Publish to npm (Trusted Publishing, OIDC)
+        # The relative tarball path begins with ./ so npm reads it as a file
+        # rather than as a package specifier.
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: npm publish "./$TARBALL" --provenance --access public
+
+      - name: Rename attestation to match Scorecard's expected suffix
+        id: attestation-asset
+        run: |
+          renamed="agent-passport-system-mcp-${GITHUB_REF_NAME#v}.intoto.jsonl"
+          cp "${{ steps.attest.outputs.bundle-path }}" "$renamed"
+          echo "path=$renamed" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SBOM
+        id: sbom
+        run: |
+          out="agent-passport-system-mcp-${GITHUB_REF_NAME#v}.sbom.spdx.json"
+          npm sbom --sbom-format spdx --omit dev > "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "${{ steps.pack.outputs.tarball }}" \
+            "${{ steps.attestation-asset.outputs.path }}" \
+            "${{ steps.sbom.outputs.path }}" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
