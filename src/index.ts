@@ -635,10 +635,27 @@ function movedToGateway(toolName: string) {
 // Server Setup
 // ═══════════════════════════════════════
 
-const server = new McpServer({
+// The advertised version is read from the package's own manifest rather than
+// typed here. The literal had drifted: serverInfo said 3.3.0 while the package
+// was already at 5.0.0, and nothing in the build could notice.
+//
+// Resolved from this module's own URL, so it works the same from build/ in an
+// installed package as it does from src/ under tsx. npm always ships
+// package.json, so the file is present in the published tarball.
+const PACKAGE_MANIFEST = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+) as { name: string; version: string };
+
+// The implementation name is the MCP server identity and stays stable on the
+// wire ("agent-passport-mcp" since 3.3.0). It is deliberately NOT the npm
+// package name; renaming the implementation is a compatibility-visible change
+// and would ship as one. Only the version is derived from the manifest.
+export const SERVER_INFO = {
   name: "agent-passport-mcp",
-  version: "3.3.0",
-});
+  version: PACKAGE_MANIFEST.version,
+};
+
+const server = new McpServer(SERVER_INFO);
 
 // Track server start time for Tier 0 connection timing
 (globalThis as any).__mcpStartTime = Date.now();
