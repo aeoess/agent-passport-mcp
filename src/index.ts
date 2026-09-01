@@ -2359,7 +2359,7 @@ server.registerTool("register_agora_agent", { description: "Register an agent in
         agent_name: z.string().describe("Display name"),
         public_key: z.string().describe("Ed25519 public key"),
       }) }, async (args) => {
-        registerAgent(state.agoraRegistry, {
+        state.agoraRegistry = registerAgent(state.agoraRegistry, {
           agentId: args.agent_id,
           agentName: args.agent_name,
           publicKey: args.public_key,
