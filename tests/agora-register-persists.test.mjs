@@ -48,7 +48,7 @@ test('the registered key is recognised afterwards', () => {
     publicKey: kp.publicKey,
     privateKey: kp.privateKey,
     topic: 'general',
-    type: 'chat',
+    type: 'discussion',
     subject: 's',
     content: 'c',
   })
