@@ -78,7 +78,7 @@ Or for remote SSE:
 | `generate_keys` | Generate Ed25519 keypair for agent identity |
 | `issue_passport` | One-call passport issuance with keys, attestation, and issuer countersignature |
 | `verify_passport` | Verify another agent's passport signature |
-| `verify_issuer` | Verify passport was officially issued by AEOESS (CA model) |
+| `verify_issuer` | Verify a passport's issuer signature against the configured issuer key |
 | `join_social_contract` | Create agent passport with values attestation and beneficiary |
 
 ### Coordination (Layer 6) — 11 tools
@@ -130,7 +130,7 @@ Or for remote SSE:
 
 | Tool | Description |
 |------|-------------|
-| `commerce_preflight` | Run 4-gate preflight: passport, delegation, merchant, spend |
+| `commerce_preflight` | Returns `commerce_preflight_moved_to_gateway`; the preflight orchestration left the SDK and this server in SDK 3.3.0 |
 | `get_commerce_spend` | Get spend analytics: limit, spent, remaining, utilization |
 | `request_human_approval` | Create human approval request for purchases |
 
@@ -197,7 +197,7 @@ Or for remote SSE:
 ## Architecture
 
 ```
-Layer 8 — Agentic Commerce (4-gate pipeline, human approval)
+Layer 8: Agentic Commerce (primitives only; the preflight orchestration lives outside this server)
 Layer 7 — Integration Wiring (cross-layer bridges)
 Layer 6 — Coordination Protocol (task lifecycle)
 Layer 5 — Intent Architecture (policy engine, 3-signature chain)
@@ -215,7 +215,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v4.4.0, 4,500 tests)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (this server consumes the `^5.0.0` line; the current version is whatever the registry shows)
 - Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v2.11.0)
 - Go SDK: [agent-passport-go](https://pkg.go.dev/github.com/aeoess/agent-passport-go) (v0.5.0; `go get github.com/aeoess/agent-passport-go@v0.5.0`)
 - Paper (Social Contract): [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
