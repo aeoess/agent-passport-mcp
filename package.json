@@ -1,6 +1,6 @@
 {
   "name": "agent-passport-system-mcp",
-  "version": "5.0.2",
+  "version": "6.0.0",
   "mcpName": "io.github.aeoess/agent-passport-mcp",
   "description": "MCP server for the Agent Passport System, protocol-layer tools only. Identity, delegation, reputation, attestation, coordination, commerce, charter amendment lifecycle, attribution. Counts and the SDK version it tracks live in the README.",
   "type": "module",
@@ -51,7 +51,7 @@
   "homepage": "https://github.com/aeoess/agent-passport-mcp",
   "dependencies": {
     "@modelcontextprotocol/server": "2.0.0",
-    "agent-passport-system": "^5.0.0",
+    "agent-passport-system": "^6.0.0",
     "zod": "^4.2.0"
   },
   "overrides": {

@@ -2152,7 +2152,7 @@ server.registerTool("create_delegation", { description: "[OPERATOR] Create a sco
         };
       });
 
-server.registerTool("verify_delegation", { description: "Verify a delegation's cryptographic signature and validity.", inputSchema: z.object({
+server.registerTool("verify_delegation", { description: "Check a delegation's signature and its stated window. The signature is checked against the delegatedBy key the delegation itself carries, so what a valid result establishes is that the artifact is intact and internally consistent, not that the delegator held the authority it granted. Revocation is not consulted here. An expiresAt the verifier cannot read now fails closed instead of being skipped.", inputSchema: z.object({
         delegation_id: z.string().describe("Delegation ID to verify"),
       }) }, async (args) => {
         const delegation = state.delegations.get(args.delegation_id);
@@ -2974,7 +2974,7 @@ server.registerTool("endorse_agent", { description: "Endorse an agent as a princ
         };
       });
 
-server.registerTool("verify_endorsement", { description: "Verify a principal's endorsement of an agent. Checks cryptographic signature.", inputSchema: z.object({
+server.registerTool("verify_endorsement", { description: "Check an endorsement's signature against the principalPublicKey the endorsement itself carries. What a valid result establishes: the endorsement is intact and signed by that key. What it does not establish: that the key belongs to the principal it names, which needs a trust anchor you supply out of band.", inputSchema: z.object({
         endorsement_id: z.string().describe("Endorsement ID to verify"),
       }) }, async (args) => {
         const endorsement = state.endorsements.get(args.endorsement_id);
@@ -4114,7 +4114,7 @@ server.registerTool("generate_governance_block", { description: "Generate a cryp
         return { content: [{ type: "text", text: `📋 Governance Block Generated\n\nDID: ${block.source_did}\nContent Hash: ${block.content_hash}\nTerms: inference=${p.inference || 'not set'}, training=${p.training || 'not set'}\n\n--- HTML EMBED (script tag) ---\n${html}\n\n--- META EMBED (base64) ---\n${meta}` }] };
       });
 
-server.registerTool("verify_governance_block", { description: "Verify a governance block's signature, content hash, and DID consistency against the original content.", inputSchema: z.object({
+server.registerTool("verify_governance_block", { description: "Verify a governance block's signature, content hash, DID consistency and expiry against the original content. A block whose expiry cannot be read now fails closed rather than being treated as unexpired.", inputSchema: z.object({
         block: z.string().describe("Governance block JSON string"),
         content: z.string().describe("Original content to verify against"),
         publicKey: z.string().describe("Publisher's Ed25519 public key (hex)"),
@@ -4302,10 +4302,13 @@ server.registerTool("create_charter", { description: "Create a new institutional
         return { content: [{ type: "text", text: `🏛️ Charter Created\n\nID: ${charter.charterId}\nName: ${charter.name}\nVersion: ${charter.version}\nOffices: ${charter.offices.map(o => o.name).join(', ')}\nSignatures: ${charter.foundingSignatures.length}` }] };
       });
 
-server.registerTool("verify_charter", { description: "Verify a charter's integrity: content hash, signatures, office consistency, incompatibility.", inputSchema: z.object({ charter_id: z.string().describe("Charter ID to verify") }) }, async (args) => {
+server.registerTool("verify_charter", { description: "Verify a charter's integrity: content hash, signatures, quorum, dissolution, office consistency, incompatibility, and, when the charter declares citations, the AttributionConsent gate over the receipts you supply. What a valid result establishes: the charter is intact and signed by the keys it names, and any citation it declares is backed by a receipt the cited principal consented to. What it does not establish: that those signers hold the authority your decision needs. A charter declaring citations cannot be valid without attribution_receipts, and fails closed with 'citations present but no receipts supplied'.", inputSchema: z.object({
+        charter_id: z.string().describe("Charter ID to verify"),
+        attribution_receipts: z.array(z.any()).optional().describe("Signed AttributionReceipts backing the charter's citations. Required for a charter that declares any; each receipt's parties must be named by self-certifying DIDs."),
+      }) }, async (args) => {
         const charter = state.charters.get(args.charter_id);
         if (!charter) return { content: [{ type: "text", text: `❌ Charter ${args.charter_id} not found` }] };
-        const result = verifyCharter(charter);
+        const result = verifyCharter(charter, args.attribution_receipts as any);
         const status = result.valid ? '✅ VALID' : '❌ INVALID';
         return { content: [{ type: "text", text: `${status}\n\nContent integrity: ${result.contentIntegrity}\nSignatures valid: ${result.signaturesValid}\nQuorum met: ${result.quorumMet}\nNot dissolved: ${result.notDissolved}\nOffices valid: ${result.officesValid}\nIncompatibility clean: ${result.incompatibilityClean}${result.errors.length ? '\n\nErrors:\n' + result.errors.join('\n') : ''}` }] };
       });
@@ -4383,7 +4386,7 @@ server.registerTool("sign_amendment", { description: "Add a signature to a propo
         return { content: [{ type: "text", text: `✅ Signature added to ${signed.amendmentId}\n\nsignatures: ${signed.signatures.length}\nroles collected: ${roles || '(none)'}\nstatus: ${signed.status}\n\nSignature counting and threshold evaluation happen in verify_amendment.` }] };
       });
 
-server.registerTool("verify_amendment", { description: "Verify an amendment against its charter's amendment policy. Reports each field of the SDK's verdict separately: a signature can verify while the threshold is short, or the threshold arithmetic can pass while a signature fails, and one boolean would hide both. Session state is not an authoritative registry: amendments live only in this process, are lost on restart, and carry no external trust.", inputSchema: z.object({
+server.registerTool("verify_amendment", { description: "Verify an amendment against its charter's amendment policy. Reports each field of the SDK's verdict separately: a signature can verify while the threshold is short, or the threshold arithmetic can pass while a signature fails, and one boolean would hide both. Session state is not an authoritative registry: amendments live only in this process, are lost on restart, and carry no external trust. A proposed charter that declares citations cannot pass here: verifyAmendment supplies no AttributionReceipts to the charter check, so use verify_charter with attribution_receipts for that part.", inputSchema: z.object({
         charter_id: z.string(),
         amendment_id: z.string(),
       }) }, async (args) => {
@@ -4535,7 +4538,7 @@ server.registerTool("compute_action_ref", { description: "Compute content-addres
         agent_id: z.string(),
         action_type: z.string(),
         scope_required: z.array(z.string()),
-        timestamp: z.string().optional().describe("ISO 8601 timestamp; defaults to now"),
+        timestamp: z.string().optional().describe("RFC 3339 timestamp carrying an explicit offset or Z; defaults to now. A zone-less value is refused, because it names no instant and would produce a different action_ref on every machine."),
       }) }, async (args) => {
         const intent = {
           agentId: args.agent_id,
@@ -4640,11 +4643,11 @@ server.registerTool("is_key_active", { description: "Check if a public key is cu
 
 // ── AttributionConsent (representation boundary) ────────────────
 
-server.registerTool("aps_create_attribution_receipt", { description: "Representation boundary: build a citer-signed AttributionReceipt attributing a claim to a third-party principal. The receipt is not yet valid — the cited principal must sign consent via aps_sign_attribution_consent before checkArtifactCitations accepts it.", inputSchema: z.object({
-        citer: z.string().describe("DID/public key of the citing agent"),
+server.registerTool("aps_create_attribution_receipt", { description: "Representation boundary: build a citer-signed AttributionReceipt attributing a claim to a third-party principal. Each party is named by a self-certifying DID that commits to the key beside it, so a receipt naming a party by a bare public key or by a did:web style identifier will not verify. The receipt is not yet valid: the cited principal must sign consent via aps_sign_attribution_consent before checkArtifactCitations accepts it.", inputSchema: z.object({
+        citer: z.string().describe("Self-certifying DID of the citing agent, from the SDK createDID (multibase did:aps). A bare public key or the hex did:aps form from createDIDHex does not self-certify and will not verify."),
         citer_public_key: z.string().describe("Hex public key of citer"),
         citer_private_key: z.string().describe("Hex private key of citer"),
-        cited_principal: z.string().describe("DID/public key of the cited principal"),
+        cited_principal: z.string().describe("Self-certifying DID of the cited principal, from the SDK createDID (multibase did:aps). It must commit to cited_principal_public_key."),
         cited_principal_public_key: z.string().describe("Hex public key of cited principal"),
         citation_content: z.string().describe("The quoted or paraphrased claim"),
         binding_context: z.string().describe("ID of the binding artifact this citation is scoped to"),
@@ -4674,7 +4677,7 @@ server.registerTool("aps_create_attribution_receipt", { description: "Representa
         }
       });
 
-server.registerTool("aps_sign_attribution_consent", { description: "Representation boundary: the cited principal adds their consent signature to an AttributionReceipt. Without this signature, verifyAttributionConsent and checkArtifactCitations reject the receipt.", inputSchema: z.object({
+server.registerTool("aps_sign_attribution_consent", { description: "Representation boundary: the cited principal adds their consent signature to an AttributionReceipt. Without this signature, verifyAttributionConsent and checkArtifactCitations reject the receipt. The signature is checked against the key the receipt carries for that party, and that key must be the one the party DID commits to.", inputSchema: z.object({
         receipt: z.any().describe("AttributionReceipt JSON from aps_create_attribution_receipt"),
         cited_principal_private_key: z.string().describe("Hex private key of cited principal"),
       }) }, async (args) => {
@@ -4686,7 +4689,7 @@ server.registerTool("aps_sign_attribution_consent", { description: "Representati
         }
       });
 
-server.registerTool("aps_verify_attribution_consent", { description: "Representation boundary: verify an AttributionReceipt end-to-end (id, citer signature, consent signature, expiry). Returns {valid, reason?}.", inputSchema: z.object({
+server.registerTool("aps_verify_attribution_consent", { description: "Representation boundary: verify an AttributionReceipt end-to-end (id, citer signature, consent signature, expiry) and bind each named party to the key beside it. What a valid result establishes: the receipt is intact, unexpired, and signed by the keys its party DIDs commit to. What it does not establish: that either party is authorized for your relying-party decision, or who they are outside the protocol. A party named by an identifier that does not self-certify is refused as unresolved rather than assumed. Returns {valid, reason?}.", inputSchema: z.object({
         receipt: z.any().describe("AttributionReceipt JSON"),
         now: z.any().optional().describe("Optional HybridTimestamp to pin the evaluation moment"),
       }) }, async (args) => {
@@ -4694,7 +4697,7 @@ server.registerTool("aps_verify_attribution_consent", { description: "Representa
         return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
       });
 
-server.registerTool("aps_check_artifact_citations", { description: "Representation boundary: gate a binding artifact's citations. Each citation must resolve to a provided, signed, unexpired receipt whose content + principal match, with per-artifact replay protection.", inputSchema: z.object({
+server.registerTool("aps_check_artifact_citations", { description: "Representation boundary: gate a binding artifact's citations. Each citation must resolve to a provided, signed, unexpired receipt whose content + principal match, with per-artifact replay protection, and each receipt must bind its parties to the keys beside them. What a valid result establishes: every citation is backed by a receipt the cited principal consented to. What it does not establish: authority to act on the artifact. Receipts whose parties are named by identifiers that do not self-certify stop passing this gate.", inputSchema: z.object({
         artifact: z.any().describe("CitingArtifact with optional citations[] array"),
         receipts: z.array(z.any()).describe("AttributionReceipts backing each citation"),
         binding_context: z.string().optional().describe("Require receipts to be scoped to this binding context"),

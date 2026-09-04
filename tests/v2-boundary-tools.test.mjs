@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import {
-  generateKeyPair, sign,
+  generateKeyPair, sign, createDID,
   createHybridTimestamp,
   createAttributionReceipt, signAttributionConsent,
   verifyAttributionConsent, checkArtifactCitations, receiptCore,
@@ -20,6 +20,7 @@ import {
   promotionSigningPayload,
   checkEscalationRequired, requestOwnerConfirmation, recordOwnerConfirmation,
   createV2Delegation, createPolicyContext,
+  createCharter, verifyCharter,
 } from 'agent-passport-system'
 
 const INDEX_SRC = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
@@ -126,11 +127,14 @@ test('attribution-consent: create → sign → verify → check_citations → re
   expires_at.wallClockEarliest = created_at.wallClockEarliest + 3600_000
   expires_at.wallClockLatest = created_at.wallClockLatest + 3600_000
 
+  // 6.0.0 binds each party to the key beside it, so a party is named by a
+  // self-certifying DID and not by the bare key. createDID emits the multibase
+  // did:aps form; the hex form from createDIDHex does not self-certify.
   const receipt = createAttributionReceipt({
-    citer: citer.publicKey,
+    citer: createDID(citer.publicKey),
     citer_public_key: citer.publicKey,
     citer_private_key: citer.privateKey,
-    cited_principal: principal.publicKey,
+    cited_principal: createDID(principal.publicKey),
     cited_principal_public_key: principal.publicKey,
     citation_content: 'Principal endorses baseline floor F-001.',
     binding_context: 'charter:demo',
@@ -161,6 +165,161 @@ test('attribution-consent: create → sign → verify → check_citations → re
   const { createHash } = await import('node:crypto')
   const recomputed = createHash('sha256').update(receiptCore(signed)).digest('hex')
   assert.equal(recomputed, signed.id)
+})
+
+// ── AttributionConsent under the 6.0.0 binding contract ─────────
+// The advisory's attacker case for this surface: a receipt carrying a victim's
+// identifier next to an attacker's key. 6.0.0 binds each named party to the key
+// beside it, so the identifier alone no longer speaks for the victim.
+test('attribution-consent: a victim identifier beside an attacker key is refused', () => {
+  const attacker = generateKeyPair()
+  const victim = generateKeyPair()
+  const created_at = createHybridTimestamp('mcp-test')
+  const expires_at = createHybridTimestamp('mcp-test')
+  expires_at.wallClockEarliest = created_at.wallClockEarliest + 3600_000
+  expires_at.wallClockLatest = created_at.wallClockLatest + 3600_000
+
+  // The receipt names the victim, and carries the attacker's key beside that name.
+  const receipt = createAttributionReceipt({
+    citer: createDID(attacker.publicKey),
+    citer_public_key: attacker.publicKey,
+    citer_private_key: attacker.privateKey,
+    cited_principal: createDID(victim.publicKey),
+    cited_principal_public_key: attacker.publicKey,
+    citation_content: 'The victim endorses this.',
+    binding_context: 'charter:demo',
+    created_at, expires_at,
+  })
+  const signed = signAttributionConsent(receipt, attacker.privateKey)
+  const result = verifyAttributionConsent(signed)
+  assert.equal(result.valid, false, 'a victim DID beside an attacker key must not verify')
+  assert.match(String(result.reason), /cited_principal binding rejected/)
+
+  // The citation gate inherits the refusal rather than reaching its own verdict.
+  const artifact = {
+    citations: [{
+      receipt_id: signed.id,
+      cited_principal: signed.cited_principal,
+      citation_content: signed.citation_content,
+    }],
+  }
+  const gate = checkArtifactCitations(artifact, [signed], { binding_context: 'charter:demo' })
+  assert.equal(gate.valid, false, 'checkArtifactCitations must inherit the binding refusal')
+})
+
+test('attribution-consent: identifiers that do not self-certify are refused, not assumed', () => {
+  const citer = generateKeyPair()
+  const principal = generateKeyPair()
+  const created_at = createHybridTimestamp('mcp-test')
+  const expires_at = createHybridTimestamp('mcp-test')
+  expires_at.wallClockEarliest = created_at.wallClockEarliest + 3600_000
+  expires_at.wallClockLatest = created_at.wallClockLatest + 3600_000
+
+  const mint = (citerName, principalName) => signAttributionConsent(
+    createAttributionReceipt({
+      citer: citerName,
+      citer_public_key: citer.publicKey,
+      citer_private_key: citer.privateKey,
+      cited_principal: principalName,
+      cited_principal_public_key: principal.publicKey,
+      citation_content: 'Principal endorses baseline floor F-001.',
+      binding_context: 'charter:demo',
+      created_at, expires_at,
+    }),
+    principal.privateKey,
+  )
+
+  // A bare public key names nothing that commits to a key.
+  const bare = verifyAttributionConsent(mint(citer.publicKey, principal.publicKey))
+  assert.equal(bare.valid, false, 'a bare public key is not a self-certifying identifier')
+  assert.match(String(bare.reason), /unresolved/)
+
+  // An opaque application identifier is refused for the same reason.
+  const opaque = verifyAttributionConsent(mint('agent:citer', 'agent:principal'))
+  assert.equal(opaque.valid, false, 'an opaque identifier is not a self-certifying identifier')
+
+  // The canonical form from createDID is the migration, and it verifies.
+  const good = verifyAttributionConsent(mint(createDID(citer.publicKey), createDID(principal.publicKey)))
+  assert.equal(good.valid, true, good.reason)
+})
+
+// ── verify_charter now depends on a gate the tool has to be given ─────
+// 6.0.0 added an AttributionConsent gate to verifyCharter. A charter that
+// declares citations cannot verify unless the caller supplies the receipts, so
+// the MCP tool exposes attribution_receipts and passes it through.
+test('verify_charter: a cited charter fails closed without receipts and passes with them', () => {
+  const founder = generateKeyPair()
+  const citer = generateKeyPair()
+  const principal = generateKeyPair()
+
+  const created_at = createHybridTimestamp('mcp-test')
+  const expires_at = createHybridTimestamp('mcp-test')
+  expires_at.wallClockEarliest = created_at.wallClockEarliest + 3600_000
+  expires_at.wallClockLatest = created_at.wallClockLatest + 3600_000
+
+  const receipt = signAttributionConsent(createAttributionReceipt({
+    citer: createDID(citer.publicKey),
+    citer_public_key: citer.publicKey,
+    citer_private_key: citer.privateKey,
+    cited_principal: createDID(principal.publicKey),
+    cited_principal_public_key: principal.publicKey,
+    citation_content: 'Principal endorses the founding purpose.',
+    binding_context: 'charter:test',
+    created_at, expires_at,
+  }), principal.privateKey)
+
+  const now = new Date().toISOString()
+  const policy = {
+    policyId: 'amend_policy',
+    requirements: [{ role: 'board', requiredSignatures: 1, eligibleKeys: [founder.publicKey] }],
+    collectionTimeoutSeconds: 86400,
+    onTimeout: 'reject',
+    reevaluateOnRevocation: true,
+  }
+  const charter = createCharter({
+    name: 'Test Charter',
+    offices: [{
+      officeId: 'board',
+      name: 'Board',
+      holderMode: 'single',
+      holderSet: [{ publicKey: founder.publicKey, appointedAt: now, appointedBy: 'charter_founding', isInterim: false }],
+      delegationPolicy: { allowedScopes: ['governance'], maxSpendPerAction: 0, maxDelegationDepth: 1 },
+      successionOrder: [],
+      status: 'active',
+      effectiveAt: now,
+      incompatibleOffices: [],
+    }],
+    amendmentPolicy: policy,
+    dissolutionPolicy: { requiresThreshold: policy, gracePeriodSeconds: 86400, activeEscrowHandling: 'settle_first' },
+    delegationSurvival: { onOfficeChange: 'require_reconfirmation', onCharterAmendment: 'survive_if_compatible' },
+    founderPrivateKey: founder.privateKey,
+    founderPublicKey: founder.publicKey,
+    founderRole: 'board',
+    citations: [{
+      receipt_id: receipt.id,
+      cited_principal: receipt.cited_principal,
+      citation_content: receipt.citation_content,
+    }],
+  })
+
+  // No receipts: the gate fails closed rather than skipping itself.
+  const without = verifyCharter(charter)
+  assert.equal(without.valid, false, 'a cited charter must not verify without receipts')
+  assert.ok(
+    without.errors.some(e => /citations present but no receipts supplied/.test(e)),
+    `expected the citation error, got: ${JSON.stringify(without.errors)}`,
+  )
+
+  // With the receipts, the citation gate is satisfied and stops being the blocker.
+  const withReceipts = verifyCharter(charter, [receipt])
+  assert.ok(
+    !withReceipts.errors.some(e => /citations present but no receipts supplied|AttributionConsent/.test(e)),
+    `citation gate should be satisfied, got: ${JSON.stringify(withReceipts.errors)}`,
+  )
+
+  // The tool threads the input through rather than dropping it.
+  assert.match(INDEX_SRC, /verifyCharter\(charter, args\.attribution_receipts/)
+  assert.match(INDEX_SRC, /attribution_receipts: z\.array\(z\.any\(\)\)\.optional\(\)/)
 })
 
 // ── ProvisionalStatement happy-path (covers 4 tools) ────────────

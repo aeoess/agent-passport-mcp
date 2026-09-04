@@ -1,5 +1,50 @@
 # Changelog
 
+## 6.0.0 ({{RELEASE_DATE}})
+
+Compatibility release for the SDK 6.0.0 security release. The full cross-SDK
+account is in the advisory published at
+https://github.com/aeoess/agent-passport-system/security/advisories.
+
+### Breaking
+
+- **The SDK dependency moves to `agent-passport-system ^6.0.0`**, up from
+  `^5.0.0`. That release changes what several verification functions establish:
+  authority now comes from caller-supplied trust rather than from a key the
+  artifact carries, identities are bound to the keys that signed, chains are
+  linked, and a timestamp the verifier cannot read fails closed. The major
+  version moves here because a tool answer changes on the same input, not
+  because this server's own API changed shape.
+- **`aps_create_attribution_receipt` requires self-certifying party
+  identifiers.** `citer` and `cited_principal` must be a DID that commits to
+  the public key named beside it, which is what the SDK's `createDID` emits
+  (the multibase `did:aps` form). A bare public key is refused as unresolved
+  and the hex form from `createDIDHex` is refused as not canonical. Receipts
+  minted by 5.x with either spelling do not verify and must be reissued.
+- **`aps_sign_attribution_consent` signs against the bound key.** The consent
+  signature is checked against the key the receipt carries for that party, and
+  that key must be the one the party DID commits to.
+- **`aps_verify_attribution_consent` binds each party to the key beside it.**
+  It previously reported valid for a receipt carrying a victim's identifier
+  next to an attacker's key. A party named by an identifier that does not
+  self-certify is now refused as unresolved rather than assumed.
+- **`aps_check_artifact_citations` inherits that refusal.** Artifacts citing
+  receipts whose parties are named by opaque identifiers stop passing the gate.
+
+### Changed
+
+- Every tool description above now states what a valid result establishes and
+  what it does not, in the advisory's terms. An integrity result is not an
+  authorization decision.
+- `server.json` and `.mcp/server.json` move to 6.0.0. Both were still declaring
+  5.0.0 while the package was 5.0.2.
+
+### Tests
+
+- Two attacker cases added for the attribution-consent surface: a victim
+  identifier beside an attacker key, and identifiers that do not self-certify.
+  Both are refused, and the citation gate inherits the refusal.
+
 ## 5.0.0 (2026-08-20)
 
 ### Breaking
