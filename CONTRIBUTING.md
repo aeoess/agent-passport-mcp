@@ -1,6 +1,6 @@
 # Contributing to Agent Passport System MCP Server
 
-Thanks for your interest in contributing! This is the MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system) — 132 tools across the full protocol surface for AI agent identity, trust, governance, and commerce.
+Thanks for your interest in contributing! This is the MCP server for the [Agent Passport System](https://github.com/aeoess/agent-passport-system), 152 tools across the full protocol surface for AI agent identity, trust, governance, and commerce.
 
 ## Getting Started
 
@@ -60,7 +60,7 @@ If you're adding new MCP tools, follow the existing pattern in `src/index.ts`:
 1. **Build passes.** `npm run build` succeeds with zero TypeScript errors.
 2. **SDK alignment.** If you're exposing a new SDK capability as an MCP tool, the SDK function must already exist and be tested. This repo wraps; it doesn't redefine.
 3. **Tool naming consistency.** Follow existing naming conventions (`snake_case`, verb-first for actions).
-4. **Zod schemas.** Every tool registers a zod input schema — no untyped parameters.
+4. **Zod schemas.** Every tool registers a zod input schema, and no untyped parameters.
 5. **README table updated.** New tools show up in the README tool table with their category.
 6. **Scope discipline.** One concern per PR. Refactors ride alongside in separate PRs.
 
@@ -71,8 +71,8 @@ Follows semantic versioning. New tools land in minor releases. Changes to tool s
 ## Out of scope
 
 - **New protocol logic.** All protocol behavior lives in `agent-passport-system`. This repo exposes it via MCP.
-- **Disabling zod validation** for convenience — validation is load-bearing for MCP client safety.
-- **Named integrations woven into tool implementations** — integration examples belong in documentation or a sibling adapter repo.
+- **Disabling zod validation** for convenience: validation is load-bearing for MCP client safety.
+- **Named integrations woven into tool implementations**: integration examples belong in documentation or a sibling adapter repo.
 - **Breaking changes to tool signatures** without major version bump and migration documentation.
 
 ---
@@ -98,7 +98,7 @@ Substantive declines include the reason.
 - **CLA / DCO:** no CLA is required. Contributions accepted on the understanding that the submitter has the right to contribute under the Apache-2.0 license.
 - **Publishing:** maintainers handle npm release publishing. Please do not bump version numbers in PRs. If your change requires a version bump, call that out in the PR description.
 - **Security issues:** open a private security advisory via GitHub rather than a public issue.
-- **Code of Conduct:** Contributor Covenant 2.1 — see [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
+- **Code of Conduct:** Contributor Covenant 2.1, see [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
 
 ---
 

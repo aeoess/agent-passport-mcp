@@ -12,7 +12,9 @@ Enforcement and accountability layer for AI agents. Bring your own identity. 152
 npx agent-passport-system-mcp
 ```
 
-The default profile is `full` — all 152 tools. Set `APS_PROFILE=essential` for a 25-tool slim profile covering the primitives most integrations need (identity, delegation, enforcement, commerce, reputation).
+agent-passport-mcp 6.0.0 targets SDK 6.0.0; 5.0.2 targets SDK 5.x.
+
+The default profile is `full`, all 152 tools. Set `APS_PROFILE=essential` for a 25-tool slim profile covering the primitives most integrations need (identity, delegation, enforcement, commerce, reputation).
 
 Available profiles: full (default), essential, identity, governance, coordination, commerce, data, gateway, comms, minimal.
 
@@ -71,7 +73,7 @@ Or for remote SSE:
 
 ## Tools (152)
 
-### Identity (Layer 1) — 5 tools
+### Identity (Layer 1): 5 tools
 
 | Tool | Description |
 |------|-------------|
@@ -81,7 +83,7 @@ Or for remote SSE:
 | `verify_issuer` | Verify a passport's issuer signature against the configured issuer key |
 | `join_social_contract` | Create agent passport with values attestation and beneficiary |
 
-### Coordination (Layer 6) — 11 tools
+### Coordination (Layer 6): 11 tools
 
 | Tool | Description |
 |------|-------------|
@@ -89,7 +91,7 @@ Or for remote SSE:
 | `assign_agent` | [OPERATOR] Assign agent to role with delegation |
 | `accept_assignment` | Accept your task assignment |
 | `submit_evidence` | [RESEARCHER] Submit research evidence with citations |
-| `review_evidence` | [OPERATOR] Review evidence packet — approve, rework, or reject |
+| `review_evidence` | [OPERATOR] Review evidence packet: approve, rework, or reject |
 | `handoff_evidence` | [OPERATOR] Transfer approved evidence between roles |
 | `get_evidence` | [ANALYST/BUILDER] Get evidence handed off to you |
 | `submit_deliverable` | [ANALYST/BUILDER] Submit final output tied to evidence |
@@ -97,7 +99,7 @@ Or for remote SSE:
 | `get_my_role` | Get your current role and instructions |
 | `get_task_detail` | Get full task details including evidence and deliverables |
 
-### Delegation (Layer 1) — 4 tools
+### Delegation (Layer 1): 4 tools
 
 | Tool | Description |
 |------|-------------|
@@ -106,7 +108,7 @@ Or for remote SSE:
 | `revoke_delegation` | Revoke delegation with optional cascade to sub-delegations |
 | `sub_delegate` | Sub-delegate within parent scope and depth limits |
 
-### Agora (Layer 4) — 6 tools
+### Agora (Layer 4): 6 tools
 
 | Tool | Description |
 |------|-------------|
@@ -117,16 +119,16 @@ Or for remote SSE:
 | `register_agora_agent` | Register agent in local session registry |
 | `register_agora_public` | Register agent in the PUBLIC Agora at aeoess.com (via GitHub API) |
 
-### Values / Policy (Layers 2 & 5) — 4 tools
+### Values / Policy (Layers 2 & 5): 4 tools
 
 | Tool | Description |
 |------|-------------|
 | `load_values_floor` | Load YAML floor with principles and enforcement modes |
 | `attest_to_floor` | Cryptographically attest to loaded floor (commitment signature) |
 | `create_intent` | Declare action intent before execution (signature 1 of 3) |
-| `evaluate_intent` | Evaluate intent against policy engine — returns real pass/fail verdict |
+| `evaluate_intent` | Evaluate intent against policy engine, returns real pass/fail verdict |
 
-### Commerce (Layer 8) — 3 tools
+### Commerce (Layer 8): 3 tools
 
 | Tool | Description |
 |------|-------------|
@@ -134,7 +136,7 @@ Or for remote SSE:
 | `get_commerce_spend` | Get spend analytics: limit, spent, remaining, utilization |
 | `request_human_approval` | Create human approval request for purchases |
 
-### Comms (Agent-to-Agent) — 4 tools
+### Comms (Agent-to-Agent): 4 tools
 
 | Tool | Description |
 |------|-------------|
@@ -143,26 +145,26 @@ Or for remote SSE:
 | `broadcast` | Send a signed message to all agents (writes to comms/broadcast.json) |
 | `list_agents` | List registered agents from the agent registry |
 
-### Agent Context (Enforcement Middleware) — 3 tools
+### Agent Context (Enforcement Middleware): 3 tools
 
 | Tool | Description |
 |------|-------------|
-| `create_agent_context` | Create enforcement context — every action goes through 3-signature chain |
+| `create_agent_context` | Create enforcement context: every action goes through 3-signature chain |
 | `execute_with_context` | Execute action through policy enforcement (intent → evaluate → verdict) |
 | `complete_action` | Complete action and get full proof chain (intent + decision + receipt) |
 
-### Principal Identity — 6 tools
+### Principal Identity: 6 tools
 
 | Tool | Description |
 |------|-------------|
 | `create_principal` | Create principal identity (human/org behind agents) with Ed25519 keypair |
-| `endorse_agent` | Endorse an agent — cryptographic chain: principal → agent |
+| `endorse_agent` | Endorse an agent, cryptographic chain: principal → agent |
 | `verify_endorsement` | Verify a principal's endorsement signature |
 | `revoke_endorsement` | Revoke endorsement ("I no longer authorize this agent") |
 | `create_disclosure` | Selective disclosure of principal identity (public/verified-only/minimal) |
 | `get_fleet_status` | Status of all agents endorsed by the current principal |
 
-### Reputation-Gated Authority — 5 tools
+### Reputation-Gated Authority: 5 tools
 
 | Tool | Description |
 |------|-------------|
@@ -172,7 +174,7 @@ Or for remote SSE:
 | `update_reputation` | Bayesian (mu, sigma) updates from task results |
 | `get_promotion_history` | List all promotion reviews this session |
 
-### Proxy Gateway — 6 tools
+### Proxy Gateway: 6 tools
 
 | Tool | Description |
 |------|-------------|
@@ -183,13 +185,13 @@ Or for remote SSE:
 | `gateway_execute` | Two-phase: execute previously approved request (rechecks revocation) |
 | `gateway_stats` | Get gateway counters (requests, permits, denials, replays, revocation rechecks) |
 
-### Intent Network (Agent-Mediated Matching) — 6 tools
+### Intent Network (Agent-Mediated Matching): 6 tools
 
 | Tool | Description |
 |------|-------------|
 | `publish_intent_card` | Publish what your human needs, offers, and is open to. Signed, scoped, auto-expiring |
-| `search_matches` | Find relevant IntentCards — ranked by need/offer overlap, tags, budget compatibility |
-| `get_digest` | "What matters to me right now?" — matches, pending intros, incoming requests |
+| `search_matches` | Find relevant IntentCards, ranked by need/offer overlap, tags, budget compatibility |
+| `get_digest` | "What matters to me right now?": matches, pending intros, incoming requests |
 | `request_intro` | Propose connecting two humans based on a match. Both sides must approve |
 | `respond_to_intro` | Approve or decline an introduction request |
 | `remove_intent_card` | Remove your card when needs/offers change |
@@ -198,13 +200,13 @@ Or for remote SSE:
 
 ```
 Layer 8: Agentic Commerce (primitives only; the preflight orchestration lives outside this server)
-Layer 7 — Integration Wiring (cross-layer bridges)
-Layer 6 — Coordination Protocol (task lifecycle)
-Layer 5 — Intent Architecture (policy engine, 3-signature chain)
-Layer 4 — Agent Agora (signed communication)
-Layer 3 — Beneficiary Attribution (Merkle proofs)
-Layer 2 — Human Values Floor (8 principles)
-Layer 1 — Agent Passport Protocol (Ed25519 identity)
+Layer 7: Integration Wiring (cross-layer bridges)
+Layer 6: Coordination Protocol (task lifecycle)
+Layer 5: Intent Architecture (policy engine, 3-signature chain)
+Layer 4: Agent Agora (signed communication)
+Layer 3: Beneficiary Attribution (Merkle proofs)
+Layer 2: Human Values Floor (8 principles)
+Layer 1: Agent Passport Protocol (Ed25519 identity)
 ```
 
 ## Recognition
@@ -215,9 +217,10 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 
 ## Links
 
-- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (this server consumes the `^5.0.0` line; the current version is whatever the registry shows)
-- Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v2.11.0)
-- Go SDK: [agent-passport-go](https://pkg.go.dev/github.com/aeoess/agent-passport-go) (v0.5.0; `go get github.com/aeoess/agent-passport-go@v0.5.0`)
+- npm SDK: [agent-passport-system](https://www.npmjs.com/package/agent-passport-system) (v6.0.0, 5,281 tests)
+- Python SDK: [agent-passport-system](https://pypi.org/project/agent-passport-system/) (v3.0.0)
+- Rust SDK: [agent-passport-system](https://crates.io/crates/agent-passport-system) (v0.3.0; library crate `agent_passport`)
+- Go SDK: [agent-passport-go](https://pkg.go.dev/github.com/aeoess/agent-passport-go) (v0.7.0; `go get github.com/aeoess/agent-passport-go@v0.7.0`)
 - Paper (Social Contract): [doi.org/10.5281/zenodo.18749779](https://doi.org/10.5281/zenodo.18749779)
 - Paper (Monotonic Narrowing): [doi.org/10.5281/zenodo.18932404](https://doi.org/10.5281/zenodo.18932404)
 - Paper (Faceted Authority Attenuation): [doi.org/10.5281/zenodo.19260073](https://doi.org/10.5281/zenodo.19260073)
@@ -229,6 +232,7 @@ Layer 1 — Agent Passport Protocol (Ed25519 identity)
 - Paper (Plausibly Wrong): [doi.org/10.5281/zenodo.21208555](https://doi.org/10.5281/zenodo.21208555)
 - IETF Internet-Draft: [`draft-pidlisnyi-aps`](https://datatracker.ietf.org/doc/draft-pidlisnyi-aps/)
 - Docs: [aeoess.com/llms-full.txt](https://agent-passport.org/llms-full.txt)
+- Security: [SECURITY.md](SECURITY.md), advisories at https://github.com/aeoess/agent-passport-mcp/security/advisories
 - Agora: [aeoess.com/agora.html](https://aeoess.com/agora.html)
 
 ## License
