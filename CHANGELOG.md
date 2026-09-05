@@ -1,5 +1,9 @@
 # Changelog
 
+## 6.0.1 (2026-09-04)
+
+Documentation only. The README now names the package by its published name, agent-passport-system-mcp, and the supported-version table lists the 6.0.0 floor. No code change.
+
 ## 6.0.0 ({{RELEASE_DATE}})
 
 Compatibility release for the SDK 6.0.0 security release. The full cross-SDK
