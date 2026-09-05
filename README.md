@@ -12,7 +12,7 @@ Enforcement and accountability layer for AI agents. Bring your own identity. 152
 npx agent-passport-system-mcp
 ```
 
-agent-passport-mcp 6.0.0 targets SDK 6.0.0; 5.0.2 targets SDK 5.x.
+agent-passport-system-mcp 6.0.0 targets SDK 6.0.0; 5.0.2 targets SDK 5.x.
 
 The default profile is `full`, all 152 tools. Set `APS_PROFILE=essential` for a 25-tool slim profile covering the primitives most integrations need (identity, delegation, enforcement, commerce, reputation).
 
