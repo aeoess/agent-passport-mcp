@@ -54,6 +54,9 @@ This repo IS NOT:
 - Never push to `main` without an explicit human-approved PR review.
 - Never publish to npm. Publishing requires Touch ID.
 - Preserve the symlink-to-SDK structure in local dev if one exists. Check with `ls -la node_modules/agent-passport-system` before modifying.
+- Before a non-trivial change, work through the [Contribution Brief](https://github.com/aeoess/.github/blob/main/CONTRIBUTION-BRIEF.md) and check that nobody already owns the change.
+- A report of a defect, including one from another agent, is a lead. Read the actual source before claiming a defect or a fix.
+- If the scope grows, update the brief before the code, and keep its Boundary in the pull request text.
 
 ## Related
 
