@@ -10,7 +10,7 @@ export {
 } from "./authorityEvaluation.js";
 export { mintChallengeReceipt, challengeReceiptHash } from "./challengeReceipt.js";
 export { signEffectReceipt } from "./effectReceipt.js";
-export { InMemoryNullifierSet } from "./nullifierSet.js";
+export { InMemoryNullifierSet, FileNullifierStore, NullifierReplayError } from "./nullifierSet.js";
 export type { NullifierStore } from "./nullifierSet.js";
 export {
   verifySinkChallenge,
