@@ -17,17 +17,20 @@
 // hash) and must not be readable or writable by other local users.
 //
 // In hosted mode (MCP_REMOTE === '1') the store never creates its
-// directory and requires it to already exist with a provisioning sentinel
-// file (HOSTED_NULLIFIER_SENTINEL). This catches a hosted deployment
-// pointing APS_NULLIFIER_DIR at a path whose persistent volume isn't
-// actually mounted: without this check, the store would silently create
-// an ephemeral directory that looks durable until the next restart, when
-// replay protection resets.
+// directory and requires it to already exist — as a real directory, not a
+// symlink — with a provisioning sentinel file (HOSTED_NULLIFIER_SENTINEL)
+// that is itself a regular file, not a symlink, directory, or fifo. This
+// refuses a directory that was not provisioned as expected. The sentinel
+// shows that provisioning happened; it does not by itself prove the path
+// is backed by a persistent volume — that is confirmed operationally, by
+// restarting the deployed service and checking that a consumed token is
+// still rejected.
 
 import {
   closeSync,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readdirSync,
@@ -40,8 +43,10 @@ import { join } from "node:path";
 import { sha256Hex } from "./canonical.js";
 
 // Provisioning sentinel required in hosted mode (see FileNullifierStore
-// below). Written by whatever process provisions the persistent volume,
-// never by this store itself.
+// below). Written by whatever process provisions the directory, never by
+// this store itself. Its presence shows provisioning happened; it is not
+// proof the directory is backed by a persistent volume (see hosted-mode
+// note above).
 export const HOSTED_NULLIFIER_SENTINEL = ".aps-nullifier-store";
 
 export interface NullifierStore {
@@ -97,13 +102,15 @@ const NULLIFIER_FILENAME = /^[0-9a-f]{64}$/;
 export interface FileNullifierStoreOptions {
   /**
    * Hosted mode: MCP_REMOTE === '1' on the hosted bridge. The store never
-   * creates `dir` — it must already exist on a provisioned, persistent
-   * volume and contain the HOSTED_NULLIFIER_SENTINEL file written when that
-   * volume was provisioned. This exists because a hosted service pointing
-   * APS_NULLIFIER_DIR at an unmounted path would otherwise get a silently
-   * auto-created, container-ephemeral directory: replay protection would
-   * appear to work until the next restart, when the directory (and every
-   * marker in it) is gone. Local stdio mode does not set this.
+   * creates `dir` — it must already exist as a real directory (not a
+   * symlink) and contain the HOSTED_NULLIFIER_SENTINEL file, itself a
+   * regular file (not a symlink, directory, or fifo), written when the
+   * directory was provisioned. This refuses a directory that was not
+   * provisioned as expected. The sentinel shows that provisioning
+   * happened; it does not by itself prove the path is backed by a
+   * persistent volume — that is confirmed operationally, by restarting the
+   * deployed service and checking that a consumed token is still rejected.
+   * Local stdio mode does not set this.
    */
   hosted?: boolean;
 }
@@ -183,34 +190,51 @@ export class FileNullifierStore implements NullifierStore {
     if (!dir) {
       return new Error(
         `nullifier store (hosted mode): APS_NULLIFIER_DIR must be set explicitly when MCP_REMOTE=1. ` +
-          `Point it at a directory on a persistent, provisioned volume — hosted mode never picks a default ` +
-          `and never creates the directory, to avoid silently falling back to container-ephemeral storage.`,
+          `Point it at a directory that has been provisioned as expected — hosted mode never picks a default ` +
+          `and never creates the directory.`,
       );
     }
-    if (!existsSync(dir)) {
-      return new Error(
-        `nullifier store (hosted mode): directory "${dir}" does not exist. ` +
-          `Hosted mode never creates it — provision the persistent volume and directory (mode 0700) before ` +
-          `starting the server, and write the "${HOSTED_NULLIFIER_SENTINEL}" sentinel into it.`,
-      );
-    }
-    let stat: Stats;
+    // lstatSync (not statSync/existsSync) so a symlinked directory is
+    // caught rather than silently followed.
+    let dirStat: Stats;
     try {
-      stat = statSync(dir);
+      dirStat = lstatSync(dir);
     } catch (e) {
-      return new Error(`nullifier store (hosted mode): cannot stat directory "${dir}": ${(e as Error).message}`);
+      return new Error(
+        `nullifier store (hosted mode): directory "${dir}" does not exist (${(e as Error).message}). ` +
+          `Hosted mode never creates it — provision the directory (mode 0700) before starting the server, and ` +
+          `write the "${HOSTED_NULLIFIER_SENTINEL}" sentinel into it.`,
+      );
     }
-    if (!stat.isDirectory()) {
+    if (dirStat.isSymbolicLink()) {
+      return new Error(
+        `nullifier store (hosted mode): "${dir}" is a symbolic link, not a real directory. Refusing to use it — ` +
+          `APS_NULLIFIER_DIR must point at the provisioned directory itself, not a link to it.`,
+      );
+    }
+    if (!dirStat.isDirectory()) {
       return new Error(`nullifier store (hosted mode): "${dir}" exists but is not a directory.`);
     }
-    const permError = FileNullifierStore.checkDirPermissions(dir, stat);
+    const permError = FileNullifierStore.checkDirPermissions(dir, dirStat);
     if (permError) return permError;
-    if (!existsSync(join(dir, HOSTED_NULLIFIER_SENTINEL))) {
+    const sentinelPath = join(dir, HOSTED_NULLIFIER_SENTINEL);
+    let sentinelStat: Stats;
+    try {
+      sentinelStat = lstatSync(sentinelPath);
+    } catch {
       return new Error(
         `nullifier store (hosted mode): directory "${dir}" is missing the provisioning sentinel ` +
-          `"${HOSTED_NULLIFIER_SENTINEL}". This means the volume was not provisioned as expected (or is not ` +
-          `actually mounted here) — refusing to use it as the nullifier store, since that would silently start ` +
-          `an ephemeral store that reopens replay on the next restart.`,
+          `"${HOSTED_NULLIFIER_SENTINEL}". This means the directory was not provisioned as expected — refusing ` +
+          `to use it as the nullifier store. Persistence itself is confirmed operationally: after deploy, ` +
+          `consume a token, restart the service, and confirm the same token is still rejected.`,
+      );
+    }
+    if (!sentinelStat.isFile()) {
+      const kind = sentinelStat.isDirectory() ? "a directory" : sentinelStat.isSymbolicLink() ? "a symbolic link" : "not a regular file";
+      return new Error(
+        `nullifier store (hosted mode): the provisioning sentinel "${HOSTED_NULLIFIER_SENTINEL}" in "${dir}" is ` +
+          `${kind}, not a regular file. Refusing to use it as the nullifier store — recreate it as an empty ` +
+          `regular file (mode 0600).`,
       );
     }
     return null;
