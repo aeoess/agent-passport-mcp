@@ -255,14 +255,25 @@ import type {
 // Durable, cross-process nullifier store for capability-token redemption
 // (aps_capability_sign_effect). The hosted bridge spawns a fresh subprocess
 // per session, so an in-memory set would let a consumed token be redeemed
-// again in another process or after a restart. APS_NULLIFIER_DIR selects
-// the directory; it defaults to a durable location under the server's
-// existing state directory. This is real persistence, not a cache: never
-// fall back to an in-memory store here if the directory is unusable — let
-// FileNullifierStore fail closed on redemption instead.
+// again in another process or after a restart. This is real persistence,
+// not a cache: never fall back to an in-memory store here if the directory
+// is unusable — let FileNullifierStore fail closed on redemption instead.
+//
+// MCP_REMOTE === '1' is set by the hosted bridge on every subprocess it
+// spawns (spawnMCPProcess in agent-passport-remote-mcp/src/remote.ts). In
+// that mode APS_NULLIFIER_DIR must be set explicitly to a pre-provisioned,
+// persistent-volume directory — no default, and the store never creates
+// it — otherwise a misconfigured (unmounted) volume path would silently
+// become an ephemeral directory that resets replay protection on restart.
+// Local stdio mode keeps the previous behavior: a default directory under
+// the server's existing state directory, created on demand.
+const isHostedNullifierMode = process.env.MCP_REMOTE === "1";
 const APS_NULLIFIER_DIR =
-  process.env.APS_NULLIFIER_DIR || join(process.env.HOME || ".", ".agent-passport-nullifiers");
-const capabilityNullifierSet: NullifierStore = new FileNullifierStore(APS_NULLIFIER_DIR);
+  process.env.APS_NULLIFIER_DIR ||
+  (isHostedNullifierMode ? undefined : join(process.env.HOME || ".", ".agent-passport-nullifiers"));
+const capabilityNullifierSet: NullifierStore = new FileNullifierStore(APS_NULLIFIER_DIR, {
+  hosted: isHostedNullifierMode,
+});
 
 
 // ═══════════════════════════════════════
