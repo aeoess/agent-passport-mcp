@@ -1,5 +1,16 @@
 # Changelog
 
+## 6.1.0 (2026-09-22)
+
+Capability-token replay state is now stored on disk instead of only in process memory. Processes using the same store share the same consumed-token records.
+
+- New setting `APS_NULLIFIER_DIR`. Local mode defaults to `~/.agent-passport-nullifiers`.
+- When `MCP_REMOTE=1`, `APS_NULLIFIER_DIR` must point to a directory provisioned in advance with a `.aps-nullifier-store` sentinel file. Capability redemption fails closed if the hosted store is not configured correctly.
+- Operators using hosted mode need to provision the store before upgrading.
+- Consumed-token markers are named by a SHA-256 hash of the authority token preimage, not the preimage itself.
+
+Persistence across a hosted service restart still depends on the configured storage. Verify it after deployment by confirming that a token consumed before a restart remains rejected afterward.
+
 ## 6.0.1 (2026-09-04)
 
 Documentation only. The README now names the package by its published name, agent-passport-system-mcp, and the supported-version table lists the 6.0.0 floor. No code change.

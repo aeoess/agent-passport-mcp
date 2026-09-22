@@ -232,10 +232,12 @@ import {
   buildEvaluationRequest as buildCapabilityEvaluationRequest,
   mintChallengeReceipt as mintCapabilityChallengeReceipt,
   signEffectReceipt as signCapabilityEffectReceipt,
-  InMemoryNullifierSet,
+  FileNullifierStore,
+  NullifierReplayError,
   verifyChallengeReceipt as verifyCapabilityChallengeReceipt,
   challengeHash as capabilityChallengeHash,
 } from "./capabilityToken/index.js";
+import type { NullifierStore } from "./capabilityToken/index.js";
 
 import type {
   SinkChallenge as CapabilitySinkChallenge,
@@ -250,8 +252,31 @@ import type {
   Decision as CapabilityDecision,
 } from "./capabilityToken/index.js";
 
-// One nullifier set per MCP process. v0.1: in-memory, no persistence.
-const capabilityNullifierSet = new InMemoryNullifierSet();
+// Durable, cross-process nullifier store for capability-token redemption
+// (aps_capability_sign_effect). The hosted bridge spawns a fresh subprocess
+// per session, so an in-memory set would let a consumed token be redeemed
+// again in another process or after a restart. Never fall back to an
+// in-memory store here if the directory is unusable — let FileNullifierStore
+// fail closed on redemption instead.
+//
+// MCP_REMOTE === '1' is set by the hosted bridge on every subprocess it
+// spawns (spawnMCPProcess in agent-passport-remote-mcp/src/remote.ts). In
+// that mode APS_NULLIFIER_DIR must be set explicitly to a directory that was
+// provisioned as expected (see FileNullifierStore's hosted-mode checks) —
+// no default, and the store never creates it. The provisioning sentinel
+// those checks require shows that provisioning happened; it does not by
+// itself prove the path is backed by a persistent volume. That is confirmed
+// operationally, by restarting the deployed service and checking that a
+// consumed token is still rejected. Local stdio mode keeps the previous
+// behavior: a default directory under the server's existing state
+// directory, created on demand.
+const isHostedNullifierMode = process.env.MCP_REMOTE === "1";
+const APS_NULLIFIER_DIR =
+  process.env.APS_NULLIFIER_DIR ||
+  (isHostedNullifierMode ? undefined : join(process.env.HOME || ".", ".agent-passport-nullifiers"));
+const capabilityNullifierSet: NullifierStore = new FileNullifierStore(APS_NULLIFIER_DIR, {
+  hosted: isHostedNullifierMode,
+});
 
 
 // ═══════════════════════════════════════
@@ -5332,24 +5357,36 @@ server.registerTool("aps_capability_sign_effect", { description: "v0.1 capabilit
             };
           }
           const preimage = receipt.authority_token_preimage!;
-          // C-3 fix: reject replay before doing work, and consume the nullifier only
-          // AFTER the effect receipt is successfully signed. Consuming before signing
-          // meant a transient signing failure permanently burned a token that never
-          // produced a valid M4. The block is synchronous (no await between the peek,
-          // the sign, and the consume), so there is no TOCTOU window.
-          if (capabilityNullifierSet.isConsumed(preimage)) {
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({ error: "nullifier replay: token preimage already consumed" }) }],
-              isError: true,
-            };
+          // Consume is the single atomic replay gate: with a durable, cross-process
+          // store, two concurrent redemptions can both pass an isConsumed() peek
+          // before either consumes, so the peek-then-sign-then-consume order this
+          // used to run in is not safe across processes. Consuming first means at
+          // most one caller ever gets past this point for a given preimage. If
+          // signing then fails, release() best-effort un-burns the token rather than
+          // permanently losing it to a transient failure.
+          try {
+            capabilityNullifierSet.consume(preimage);
+          } catch (e) {
+            if (e instanceof NullifierReplayError) {
+              return {
+                content: [{ type: "text" as const, text: JSON.stringify({ error: "nullifier replay: token preimage already consumed" }) }],
+                isError: true,
+              };
+            }
+            throw e;
           }
 
-          const effectReceipt = signCapabilityEffectReceipt({
-            challenge_receipt: receipt,
-            effect: args.effect as CapabilitySinkEffect,
-            sink_key: sinkKey,
-          });
-          capabilityNullifierSet.consume(preimage);
+          let effectReceipt;
+          try {
+            effectReceipt = signCapabilityEffectReceipt({
+              challenge_receipt: receipt,
+              effect: args.effect as CapabilitySinkEffect,
+              sink_key: sinkKey,
+            });
+          } catch (e) {
+            capabilityNullifierSet.release?.(preimage);
+            throw e;
+          }
           return {
             content: [{
               type: "text" as const,
