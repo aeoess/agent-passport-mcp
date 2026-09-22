@@ -18,6 +18,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -217,6 +218,50 @@ test("hosted mode works with a pre-created directory plus sentinel, and never cr
     store.consume(preimage);
     assert.equal(store.isConsumed(preimage), true);
     assert.throws(() => store.consume(preimage), NullifierReplayError);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("hosted mode refuses a directory that is actually a symlink", () => {
+  const parent = freshDir();
+  const realDir = join(parent, "real");
+  const linkDir = join(parent, "link");
+  try {
+    mkdirSync(realDir, { mode: 0o700 });
+    closeSync(openSync(join(realDir, HOSTED_NULLIFIER_SENTINEL), "w", 0o600));
+    symlinkSync(realDir, linkDir);
+
+    const store = new FileNullifierStore(linkDir, { hosted: true });
+    assert.throws(() => store.consume("whatever"), /symbolic link/i);
+    assert.throws(() => store.isConsumed("whatever"), /symbolic link/i);
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test("hosted mode refuses a sentinel that is a directory", () => {
+  const dir = freshDir();
+  try {
+    mkdirSync(join(dir, HOSTED_NULLIFIER_SENTINEL));
+    const store = new FileNullifierStore(dir, { hosted: true });
+    assert.throws(() => store.consume("whatever"), /not a regular file|is a directory/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("hosted mode refuses a sentinel that is a symlink", () => {
+  const parent = freshDir();
+  const dir = join(parent, "provisioned");
+  try {
+    mkdirSync(dir, { mode: 0o700 });
+    const realSentinel = join(parent, "real-sentinel");
+    closeSync(openSync(realSentinel, "w", 0o600));
+    symlinkSync(realSentinel, join(dir, HOSTED_NULLIFIER_SENTINEL));
+
+    const store = new FileNullifierStore(dir, { hosted: true });
+    assert.throws(() => store.consume("whatever"), /not a regular file|symbolic link/i);
   } finally {
     rmSync(parent, { recursive: true, force: true });
   }
